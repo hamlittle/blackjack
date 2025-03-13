@@ -20,6 +20,24 @@ pub enum Rank {
     Ace,
 }
 
+impl Rank {
+    pub fn value(&self) -> u8 {
+        use Rank::*;
+        match self {
+            Two => 2,
+            Three => 3,
+            Four => 4,
+            Five => 5,
+            Six => 6,
+            Seven => 7,
+            Eight => 8,
+            Nine => 9,
+            Ten | Jack | Queen | King => 10,
+            Ace => 11,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, EnumIter)]
 pub enum Suit {
     Spades,

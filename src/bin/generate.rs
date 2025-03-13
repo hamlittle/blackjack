@@ -1,14 +1,9 @@
 use num_format::{Locale, ToFormattedString};
-use shoe::Shoe;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{fs, thread};
 use std::{io::Write, time::Instant};
-
-mod card;
-mod config;
-mod shoe;
 
 fn print_progress(ndx: usize, count: usize, bytes: usize, start: Instant) {
     let elapsed = start.elapsed();
