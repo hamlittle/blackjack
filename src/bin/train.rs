@@ -1,125 +1,161 @@
-use blackjack::game::{Game, Outcome, Score};
+use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
+
+use blackjack::game::{Game, GameStatus, Outcome, Player, Score};
 use blackjack::model::{self, Model};
+use blackjack::shoe::Shoe;
 use burn::backend::{Autodiff, Wgpu, wgpu::WgpuDevice};
 use burn::nn::loss::MseLoss;
 use burn::optim::AdamConfig;
 use burn::prelude::*;
 use burn::tensor::cast::ToElement;
+use num_enum::TryFromPrimitive;
 
-fn simulate_round<B: Backend>(
-    model: &mut Model<B>,
-    game: &mut Game,
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum Action {
+    Hit = 0,
+    Stand = 1,
+    Double = 2,
+    Split = 3,
+    Surrender = 4,
+}
+
+fn new_game() -> (Game, Rc<RefCell<Player>>) {
+    let (game, player) = loop {
+        let mut shoe = Shoe::new(1);
+        shoe.shuffle(&mut rand::rng());
+
+        let mut game = Game::new(shoe);
+        let player = game.add_player(1.0);
+
+        let status = game.start();
+
+        if status == GameStatus::PlayerTurn {
+            break (game, player);
+        }
+    };
+
+    (game, player)
+}
+
+fn forward<B: Backend>(
+    model: &Model<B>,
     device: &B::Device,
+    game: &Game,
+    player: &Player,
 ) -> (Tensor<B, 2>, Tensor<B, 2>) {
-    // find a starting deal that is not an immediate blackjack for either player
-    while game.start(1.0) != Outcome::NoWinner {
-        game.start(1.0);
-    }
+    let player_score = player.score();
+    let is_soft = match player_score {
+        Score::Soft(_) => true,
+        _ => false,
+    };
+    let dealer_upcard = game.dealer_upcard();
 
-    let gamma = 0.99;
+    let state = Tensor::<B, 2>::from_data(
+        [[
+            player_score.value() as f32 / 21.0,
+            is_soft as u8 as f32,
+            dealer_upcard.rank.value() as f32 / 11.0,
+        ]],
+        device,
+    );
 
-    loop {
-        let player_score = game.player_score().value();
-        let dealer_upcard = game.dealer_upcard().rank.value();
-        let is_soft = match game.player_score() {
-            Score::Soft(_) => true,
-            _ => false,
-        };
+    (state.clone(), model.forward(state))
+}
 
-        let state = Tensor::<B, 2>::from_data(
-            [[
-                player_score as f32 / 21.0,
-                dealer_upcard as f32 / 11.0,
-                is_soft as u8 as f32,
-            ]],
-            device,
-        );
+fn compute_reward<B: Backend>(
+    model: &Model<B>,
+    device: &B::Device,
+    game: &Game,
+    plays: &[Rc<RefCell<Player>>],
+) -> f32 {
+    const GAMMA: f32 = 0.99;
 
-        let predicted = model.forward(state.clone());
-        let action = predicted
-            .clone()
-            .argmax(1)
-            .to_data()
-            .to_vec::<B::IntElem>()
-            .unwrap()[0]
-            .to_usize();
+    let reward = plays
+        .iter()
+        .map(|play| {
+            let play = play.borrow();
 
-        let outcome = match action {
-            0 => game.hit(),
-            1 => game.double(),
-            2 => game.stand(),
-            _ => panic!("Invalid action"),
-        };
-
-        let reward = match outcome {
-            Outcome::PlayerWin(r) => r,
-            Outcome::DealerWin(r) => -r,
-            Outcome::Push => 0.0,
-            Outcome::NoWinner => {
-                // use predicted value of next state (TD learning)
-                let next_player_score = game.player_score().value();
-                let next_dealer_upcard = game.dealer_upcard().rank.value();
-                let next_is_soft = match game.player_score() {
-                    Score::Soft(_) => true,
-                    _ => false,
-                };
-
-                let next_state = Tensor::<B, 2>::from_data(
-                    [[
-                        next_player_score as f32 / 21.0,
-                        next_dealer_upcard as f32 / 11.0,
-                        next_is_soft as u8 as f32,
-                    ]],
-                    device,
-                );
-
-                let next_predicted = model.forward(next_state.clone());
-
-                let max_next_q = next_predicted
-                    .clone()
+            if play.outcome().is_some() {
+                match play.outcome().unwrap() {
+                    Outcome::PlayerWin(bet) => bet,
+                    Outcome::DealerWin(bet) => -bet,
+                    Outcome::Push => 0.0,
+                }
+            } else {
+                let (_, predicted) = forward(model, device, game, &play);
+                let predicted_best = predicted
                     .max_dim(1)
                     .to_data()
                     .to_vec::<B::FloatElem>()
                     .unwrap()[0]
                     .to_f32();
 
-                gamma * max_next_q
+                GAMMA * predicted_best
             }
-        };
+        })
+        .sum();
 
-        let mut target = predicted
-            .clone()
-            .to_data()
-            .to_vec::<B::FloatElem>()
-            .unwrap();
-        target[action] = B::FloatElem::from_elem(reward);
-        let target = Tensor::<B, 2>::from_data(target.as_slice(), device);
-
-        return (state, target);
-    }
+    reward
 }
 
-// fn train<B: Backend, O>(
-//     epochs: usize,
-//     model: &mut model::Model<B>,
-//     optimizer: &mut O,
-//     loss_fn: &MseLoss,
-// ) {
-//     for epoch in 0..epochs {
-//         let mut total_loss = 0.0;
-//         for (state, target_q_values) in &train_data {
-//             let predictions = model.forward(state.clone());
-//             let loss = loss_fn.forward(predictions, target_q_values.clone());
-//             optimizer.step(loss);
-//             total_loss += loss.to_data().value()[0];
-//         }
-//         println!(
-//             "Epoch {}: Loss {:.4}",
-//             epoch,
-//             total_loss / train_data.len() as f32
-//         );
-//     }
-// }
+fn update_target<B: Backend>(predicted: Tensor<B, 2>, action: usize, reward: f32) -> Tensor<B, 2> {
+    let mut data = predicted
+        .clone()
+        .to_data()
+        .to_vec::<B::FloatElem>()
+        .unwrap();
+    data[action] = B::FloatElem::from_elem(reward);
+
+    Tensor::<B, 2>::from_data(data.as_slice(), &predicted.device())
+}
+
+fn step<B: Backend>(
+    model: &Model<B>,
+    device: &B::Device,
+) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 2>) {
+    let (mut game, player) = new_game();
+
+    let (state, predicted) = forward(model, device, &game, &player.borrow());
+
+    let action = predicted
+        .clone()
+        .argmax(1)
+        .to_data()
+        .to_vec::<B::IntElem>()
+        .unwrap()[0]
+        .to_usize();
+
+    let plays = match Action::try_from(action).unwrap() {
+        Action::Hit => {
+            player.borrow_mut().hit();
+            vec![player]
+        }
+        Action::Stand => {
+            player.borrow_mut().stand();
+            vec![player]
+        }
+        Action::Double => {
+            player.borrow_mut().double();
+            vec![player]
+        }
+        Action::Split => {
+            let second_play = game.split_player(&mut *player.borrow_mut());
+            vec![player, second_play]
+        }
+        Action::Surrender => {
+            player.borrow_mut().surrender();
+            vec![player]
+        }
+    };
+
+    let reward = compute_reward(model, device, &game, &plays);
+    let target = update_target(predicted.clone(), action, reward);
+
+    (state, predicted, target)
+}
 
 fn main() {
     type Backend = Wgpu<f32, i32>;

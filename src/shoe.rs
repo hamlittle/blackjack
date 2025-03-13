@@ -43,15 +43,17 @@ impl Shoe {
 
     pub fn shuffle(&mut self, rng: &mut impl rand::Rng) {
         self.cards.shuffle(rng);
+        self.n_dealt = 0;
     }
 
-    pub fn next(&mut self) -> Option<&Card> {
-        let card = self.cards.get(self.n_dealt);
+    pub fn one(&mut self) -> Option<Card> {
+        let card = self.cards.get(self.n_dealt)?;
+        self.n_dealt += 1;
 
-        if card.is_some() {
-            self.n_dealt += 1;
-        }
+        Some(*card)
+    }
 
-        card
+    pub fn two(&mut self) -> Option<[Card; 2]> {
+        Some([self.one()?, self.one()?])
     }
 }
