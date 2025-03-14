@@ -1,5 +1,3 @@
-use std::{cell::RefCell, rc::Rc};
-
 use burn::{
     nn::{
         Linear, LinearConfig, Relu,
@@ -14,7 +12,7 @@ use strum::{EnumIter, IntoEnumIterator};
 
 use crate::{
     data::GameBatch,
-    game::{Game, Outcome, Player, Score},
+    game::{Game, Outcome, Score},
 };
 
 #[derive(TryFromPrimitive, EnumIter)]
@@ -76,12 +74,12 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    pub fn normalize(game: &Game, player: &Player, device: &B::Device) -> Tensor<B, 2> {
+    pub fn normalize(game: &Game, device: &B::Device) -> Tensor<B, 2> {
         let len = Input::iter().len();
         let data: Vec<B::FloatElem> = Input::iter()
             .map(|input| match input {
-                Input::PlayerScore => player.score().value() as f32 / 21.0,
-                Input::IsSoft => match player.score() {
+                Input::PlayerScore => game.player_score(0).value() as f32 / 21.0,
+                Input::IsSoft => match game.player_score(0) {
                     Score::Soft(_) => true as u8 as f32,
                     Score::Hard(_) => false as u8 as f32,
                 },
@@ -105,8 +103,8 @@ impl<B: Backend> Model<B> {
         value + (advantage.clone() - advantage.mean_dim(1))
     }
 
-    pub fn forward_step(&self, item: GameBatch<B>) -> RegressionOutput<B> {
-        let output = self.forward(item.input.clone());
+    pub fn forward_step(&self, batch: GameBatch<B>) -> RegressionOutput<B> {
+        let output = self.forward(batch.input.clone());
 
         let action = output
             .clone()
@@ -116,11 +114,10 @@ impl<B: Backend> Model<B> {
             .unwrap()[0]
             .to_usize();
 
-        let mut game = item.game;
-        let player = item.player;
+        let mut game = batch.game.clone();
+        let players = play_game(&mut game, action.try_into().unwrap());
 
-        let plays = play_hand(action.try_into().unwrap(), &mut game, player.clone());
-        let reward = compute_reward(self, &output.device(), &game, &plays);
+        let reward = compute_reward(self, &output.device(), &game, &players);
         let targets = update_targets(output.clone(), action, reward);
         let loss = MseLoss::new().forward(output.clone(), targets.clone(), Reduction::Mean);
 
@@ -141,37 +138,33 @@ impl<B: AutodiffBackend> TrainStep<GameBatch<B>, RegressionOutput<B>> for Model<
     }
 }
 
-impl<B: AutodiffBackend> ValidStep<GameBatch<B>, RegressionOutput<B>> for Model<B> {
+impl<B: Backend> ValidStep<GameBatch<B>, RegressionOutput<B>> for Model<B> {
     fn step(&self, item: GameBatch<B>) -> RegressionOutput<B> {
         self.forward_step(item)
     }
 }
 
-fn play_hand(
-    action: Action,
-    game: &mut Game,
-    player: Rc<RefCell<Player>>,
-) -> Vec<Rc<RefCell<Player>>> {
+fn play_game(game: &mut Game, action: Action) -> Vec<usize> {
     match Action::try_from(action).unwrap() {
         Action::Hit => {
-            player.borrow_mut().hit();
-            vec![player]
+            game.player_hit(0);
+            vec![0]
         }
         Action::Stand => {
-            player.borrow_mut().stand();
-            vec![player]
+            game.player_stand(0);
+            vec![0]
         }
         Action::Double => {
-            player.borrow_mut().double();
-            vec![player]
+            game.player_double(0);
+            vec![0]
         }
         Action::Split => {
-            let second_play = game.split_player(&mut *player.borrow_mut());
-            vec![player, second_play]
+            let split_play = game.player_split(0);
+            vec![0, split_play]
         }
         Action::Surrender => {
-            player.borrow_mut().surrender();
-            vec![player]
+            game.player_surrender(0);
+            vec![0]
         }
     }
 }
@@ -180,38 +173,40 @@ fn compute_reward<B: Backend>(
     model: &Model<B>,
     device: &B::Device,
     game: &Game,
-    plays: &[Rc<RefCell<Player>>],
+    players: &[usize],
 ) -> f32 {
     const GAMMA: f32 = 0.99;
 
-    let reward = plays
+    let (terminated, unterminated): (Vec<usize>, Vec<usize>) = players
         .iter()
-        .map(|play| {
-            let play = play.borrow();
+        .partition(|player| game.player_outcome(**player).is_some());
 
-            if play.outcome().is_some() {
-                match play.outcome().unwrap() {
-                    Outcome::PlayerWin(bet) => bet,
-                    Outcome::DealerWin(bet) => -bet,
-                    Outcome::Push => 0.0,
-                }
-            } else {
-                let input = Model::normalize(game, &play, device);
-
-                let predicted = model.forward(input);
-                let predicted_best = predicted
-                    .max_dim(1)
-                    .to_data()
-                    .to_vec::<B::FloatElem>()
-                    .unwrap()[0]
-                    .to_f32();
-
-                GAMMA * predicted_best
-            }
+    let current_rewards: Vec<f32> = terminated
+        .into_iter()
+        .map(|player| match game.player_outcome(player).unwrap() {
+            Outcome::PlayerWin(bet) => bet,
+            Outcome::DealerWin(bet) => -bet,
+            Outcome::Push => 0.0,
         })
-        .sum();
+        .collect();
 
-    reward
+    let future_rewards: Vec<f32> = unterminated
+        .into_iter()
+        .map(|_| {
+            let state = Model::normalize(game, device);
+            let predicted = model.forward(state);
+            let predicted_best = predicted
+                .max_dim(1)
+                .to_data()
+                .to_vec::<B::FloatElem>()
+                .unwrap()[0]
+                .to_f32();
+
+            GAMMA * predicted_best
+        })
+        .collect();
+
+    [current_rewards, future_rewards].iter().flatten().sum()
 }
 
 fn update_targets<B: Backend>(predicted: Tensor<B, 2>, action: usize, reward: f32) -> Tensor<B, 2> {

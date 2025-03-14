@@ -1,25 +1,34 @@
 use blackjack::data::{GameBatcher, GameDataset};
 use blackjack::model::ModelConfig;
-use burn::data::dataloader::DataLoaderBuilder;
-use burn::optim::AdamConfig;
-use burn::prelude::*;
+use burn::backend::Autodiff;
 use burn::tensor::backend::AutodiffBackend;
+use burn::{
+    data::dataloader::DataLoaderBuilder,
+    optim::AdamConfig,
+    prelude::*,
+    record::CompactRecorder,
+    train::{LearnerBuilder, metric::LossMetric},
+};
 
 #[derive(Config)]
 pub struct TrainConfig {
+    pub model: ModelConfig,
     pub optimizer: AdamConfig,
 
     #[config(default = 100)]
     pub num_epochs: usize,
 
+    #[config(default = 1)]
+    pub batch_size: usize,
+
     #[config(default = 2)]
     pub num_workers: usize,
 
-    #[config(default = 0xC0FFEE)]
+    #[config(default = 0x12C0FFEE)]
     pub seed: u64,
 
-    #[config(default = 1)]
-    pub batch_size: usize,
+    #[config(default = 1.0e-4)]
+    pub learning_rate: f64,
 }
 
 fn create_artifact_dir(artifact_dir: &str) {
@@ -27,12 +36,12 @@ fn create_artifact_dir(artifact_dir: &str) {
     std::fs::create_dir_all(artifact_dir).ok();
 }
 
-pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
+pub fn run<B: AutodiffBackend>(artifact_dir: &str, config: TrainConfig, device: B::Device) {
     create_artifact_dir(artifact_dir);
+    config
+        .save(format!("{artifact_dir}/config.json"))
+        .expect("Config should be saved successfully");
 
-    let optimizer = AdamConfig::new();
-    let config = TrainConfig::new(optimizer);
-    let model = ModelConfig::new().init(&device);
     B::seed(config.seed);
 
     let train_dataset = GameDataset::new();
@@ -56,28 +65,33 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         .num_workers(config.num_workers)
         .build(valid_dataset);
 
-    // // Model
-    // let learner = LearnerBuilder::new(artifact_dir)
-    //     .metric_train_numeric(LossMetric::new())
-    //     .metric_valid_numeric(LossMetric::new())
-    //     .with_file_checkpointer(CompactRecorder::new())
-    //     .devices(vec![device.clone()])
-    //     .num_epochs(config.num_epochs)
-    //     .summary()
-    //     .build(model, config.optimizer.init(), 1e-3);
+    let learner = LearnerBuilder::new(artifact_dir)
+        .metric_train_numeric(LossMetric::new())
+        .metric_valid_numeric(LossMetric::new())
+        .with_file_checkpointer(CompactRecorder::new())
+        .devices(vec![device.clone()])
+        .num_epochs(config.num_epochs)
+        .summary()
+        .build(
+            config.model.init::<B>(&device),
+            config.optimizer.init(),
+            config.learning_rate,
+        );
 
-    // let model_trained = learner.fit(dataloader_train, dataloader_test);
+    let model_trained = learner.fit(dataloader_train, dataloader_test);
 
-    // config
-    //     .save(format!("{artifact_dir}/config.json").as_str())
-    //     .unwrap();
-
-    // model_trained
-    //     .save_file(
-    //         format!("{artifact_dir}/model"),
-    //         &NoStdTrainingRecorder::new(),
-    //     )
-    //     .expect("Failed to save trained model");
+    model_trained
+        .save_file(format!("{artifact_dir}/model"), &CompactRecorder::new())
+        .expect("Failed to save trained model");
 }
 
-fn main() {}
+fn main() {
+    use burn::backend::wgpu::{Wgpu, WgpuDevice};
+
+    let device = WgpuDevice::default();
+    let artifact_dir = "/tmp/blackjack";
+
+    let config = TrainConfig::new(ModelConfig::new(), AdamConfig::new());
+
+    run::<Autodiff<Wgpu>>(artifact_dir, config, device.clone());
+}

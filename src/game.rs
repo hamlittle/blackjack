@@ -1,5 +1,3 @@
-use std::{cell::RefCell, rc::Rc};
-
 use crate::{
     card::{Card, Rank},
     shoe::Shoe,
@@ -12,17 +10,16 @@ pub enum GameStatus {
     GameOver,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Game {
-    shoe: Rc<RefCell<Shoe>>,
+    shoe: Shoe,
     dealer_hand: Vec<Card>,
-    players: Vec<Rc<RefCell<Player>>>,
+    players: Vec<Player>,
     status: GameStatus,
 }
 
-#[derive(Debug)]
-pub struct Player {
-    shoe: Rc<RefCell<Shoe>>,
+#[derive(Clone, Debug)]
+struct Player {
     hand: Vec<Card>,
     bet: f32,
     stand: bool,
@@ -36,15 +33,137 @@ pub enum Outcome {
     Push,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum Score {
     Hard(u8),
     Soft(u8),
 }
 
-impl Player {
-    pub fn new(shoe: Rc<RefCell<Shoe>>, bet: f32) -> Self {
+impl Game {
+    pub fn new(shoe: Shoe) -> Self {
         Self {
-            shoe: shoe.clone(),
+            shoe,
+            dealer_hand: Vec::new(),
+            players: Vec::new(),
+            status: GameStatus::PlaceBets,
+        }
+    }
+
+    pub fn add_player(&mut self, bet: f32) -> usize {
+        if self.status != GameStatus::PlaceBets {
+            panic!("Cannot add player after game has started.");
+        }
+
+        self.players.push(Player::new(bet));
+
+        self.players.len()
+    }
+
+    pub fn start(&mut self) -> GameStatus {
+        if self.status != GameStatus::PlaceBets {
+            panic!("Game has already started.");
+        }
+
+        self.dealer_hand.extend(self.shoe.two().unwrap());
+        self.players
+            .iter_mut()
+            .for_each(|player| player.hand.extend(self.shoe.two().unwrap()));
+
+        if score(&self.dealer_hand).blackjack() {
+            self.players.iter_mut().for_each(|player| {
+                player.action_dealer_blackjack();
+            });
+
+            self.status = GameStatus::GameOver;
+        } else {
+            self.players.iter_mut().for_each(|player| {
+                if score(&player.hand).blackjack() {
+                    player.action_player_blackjack();
+                }
+            });
+
+            if self.players.iter().all(|player| player.stand) {
+                self.status = GameStatus::GameOver;
+            } else {
+                self.status = GameStatus::PlayerTurn;
+            }
+        }
+
+        self.status
+    }
+
+    pub fn end(&mut self) {
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Game is not in progress.");
+        }
+
+        if !self.players.iter().all(|player| player.stand) {
+            panic!("Cannot end game until all players stand.");
+        }
+
+        while dealer_must_hit(score(&self.dealer_hand)) {
+            self.dealer_hand.push(self.shoe.one().unwrap());
+        }
+
+        let dealer_score = score(&self.dealer_hand);
+
+        self.players.iter_mut().for_each(|player| {
+            player.action_end(&dealer_score);
+        });
+
+        self.status = GameStatus::GameOver;
+    }
+
+    pub fn player_hit(&mut self, player: usize) -> Option<Outcome> {
+        self.players[player].action_hit(self.shoe.one().unwrap())
+    }
+
+    pub fn player_stand(&mut self, player: usize) {
+        self.players[player].action_stand();
+    }
+
+    pub fn player_double(&mut self, player: usize) -> Option<Outcome> {
+        self.players[player].action_double(self.shoe.one().unwrap())
+    }
+
+    pub fn player_split(&mut self, player: usize) -> usize {
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Cannot split unless player turn.");
+        }
+
+        let player = &mut self.players[player];
+        let card = player.action_split();
+        player.hand.push(self.shoe.one().unwrap());
+
+        let mut split_play = Player::new(player.bet);
+        split_play.hand.push(card);
+        split_play.hand.push(self.shoe.one().unwrap());
+
+        self.players.push(split_play);
+
+        self.players.len()
+    }
+
+    pub fn player_surrender(&mut self, player: usize) -> Outcome {
+        self.players[player].action_surrender()
+    }
+
+    pub fn player_score(&self, player: usize) -> Score {
+        score(&self.players[player].hand)
+    }
+
+    pub fn player_outcome(&self, player: usize) -> Option<Outcome> {
+        self.players[player].outcome
+    }
+
+    pub fn dealer_upcard(&self) -> Card {
+        self.dealer_hand[0]
+    }
+}
+
+impl Player {
+    fn new(bet: f32) -> Self {
+        Self {
             hand: Vec::new(),
             bet,
             stand: false,
@@ -52,32 +171,26 @@ impl Player {
         }
     }
 
-    pub fn score(&self) -> Score {
-        score(&self.hand)
-    }
-
-    pub fn outcome(&self) -> Option<Outcome> {
-        self.outcome
-    }
-
-    pub fn hit(&mut self) {
+    fn action_hit(&mut self, card: Card) -> Option<Outcome> {
         if self.stand {
-            panic!("Cannot hit after standing.");
+            panic!("Cannot deal after standing.");
         }
 
-        self.deal_one();
+        self.hand.push(card);
 
-        if self.score().bust() {
+        if score(&self.hand).bust() {
             self.outcome = Some(Outcome::DealerWin(self.bet));
             self.stand = true;
         }
+
+        self.outcome
     }
 
-    pub fn stand(&mut self) {
+    fn action_stand(&mut self) {
         self.stand = true;
     }
 
-    pub fn double(&mut self) {
+    fn action_double(&mut self, card: Card) -> Option<Outcome> {
         if self.stand {
             panic!("Cannot double after standing.");
         }
@@ -87,11 +200,13 @@ impl Player {
         }
 
         self.bet *= 2.0;
-        self.hit();
-        self.stand();
+        self.action_hit(card);
+        self.action_stand();
+
+        self.outcome
     }
 
-    fn split_hand(&mut self) -> Card {
+    fn action_split(&mut self) -> Card {
         if self.stand {
             panic!("Cannot split after standing.");
         }
@@ -107,7 +222,7 @@ impl Player {
         self.hand.pop().unwrap()
     }
 
-    pub fn surrender(&mut self) {
+    pub fn action_surrender(&mut self) -> Outcome {
         if self.stand {
             panic!("Cannot surrender after standing.");
         }
@@ -118,14 +233,12 @@ impl Player {
 
         self.outcome = Some(Outcome::DealerWin(self.bet / 2.0));
         self.stand = true;
+
+        self.outcome.unwrap()
     }
 
-    fn deal_one(&mut self) {
-        self.hand.push(self.shoe.borrow_mut().one().unwrap());
-    }
-
-    fn dealer_blackjack(&mut self) {
-        if self.score().blackjack() {
+    fn action_dealer_blackjack(&mut self) {
+        if score(&self.hand).blackjack() {
             self.outcome = Some(Outcome::Push);
         } else {
             self.outcome = Some(Outcome::DealerWin(self.bet));
@@ -134,12 +247,12 @@ impl Player {
         self.stand = true;
     }
 
-    fn player_blackjack(&mut self) {
+    fn action_player_blackjack(&mut self) {
         self.outcome = Some(Outcome::PlayerWin(self.bet * 1.5));
         self.stand = true;
     }
 
-    fn compare(&mut self, dealer_score: &Score) {
+    fn action_end(&mut self, dealer_score: &Score) {
         if !self.stand {
             panic!("Cannot compare until player stands.");
         }
@@ -153,124 +266,11 @@ impl Player {
             return;
         }
 
-        match self.score().value().cmp(&dealer_score.value()) {
+        match score(&self.hand).value().cmp(&dealer_score.value()) {
             std::cmp::Ordering::Less => self.outcome = Some(Outcome::DealerWin(self.bet)),
             std::cmp::Ordering::Equal => self.outcome = Some(Outcome::Push),
             std::cmp::Ordering::Greater => self.outcome = Some(Outcome::PlayerWin(self.bet)),
         }
-    }
-}
-
-impl Game {
-    pub fn new(shoe: Shoe) -> Self {
-        let shoe = Rc::new(RefCell::new(shoe));
-
-        Self {
-            shoe,
-            dealer_hand: Vec::new(),
-            players: Vec::new(),
-            status: GameStatus::PlaceBets,
-        }
-    }
-
-    pub fn add_player(&mut self, bet: f32) -> Rc<RefCell<Player>> {
-        if self.status != GameStatus::PlaceBets {
-            panic!("Cannot add player after game has started.");
-        }
-
-        let player = Rc::new(RefCell::new(Player::new(self.shoe.clone(), bet)));
-        self.players.push(player.clone());
-
-        player
-    }
-
-    pub fn split_player(&mut self, player: &mut Player) -> Rc<RefCell<Player>> {
-        if self.status != GameStatus::PlayerTurn {
-            panic!("Cannot split unless player turn.");
-        }
-
-        let card = player.split_hand();
-
-        let mut second_play = Player::new(self.shoe.clone(), player.bet);
-        second_play.hand.push(card);
-
-        player.deal_one();
-        second_play.deal_one();
-
-        let second_play = Rc::new(RefCell::new(second_play));
-        self.players.push(second_play.clone());
-
-        second_play
-    }
-
-    pub fn start(&mut self) -> GameStatus {
-        if self.status != GameStatus::PlaceBets {
-            panic!("Game has already started.");
-        }
-
-        for _ in 0..2 {
-            self.players.iter_mut().for_each(|player| {
-                player.borrow_mut().deal_one();
-            });
-
-            self.deal_one();
-        }
-
-        if self.dealer_score().blackjack() {
-            self.players.iter_mut().for_each(|player| {
-                player.borrow_mut().dealer_blackjack();
-            });
-
-            self.status = GameStatus::GameOver;
-        } else {
-            self.players.iter_mut().for_each(|player| {
-                if player.borrow().score().blackjack() {
-                    player.borrow_mut().player_blackjack();
-                }
-            });
-
-            if self.players.iter().all(|player| player.borrow().stand) {
-                self.status = GameStatus::GameOver;
-            } else {
-                self.status = GameStatus::PlayerTurn;
-            }
-        }
-
-        self.status
-    }
-
-    pub fn end(&mut self) {
-        if self.status != GameStatus::PlayerTurn {
-            panic!("Game is not in progress.");
-        }
-
-        if !self.players.iter().all(|player| player.borrow().stand) {
-            panic!("Cannot end game until all players stand.");
-        }
-
-        while dealer_must_hit(self.dealer_score()) {
-            self.deal_one();
-        }
-
-        let dealer_score = self.dealer_score();
-
-        self.players.iter_mut().for_each(|player| {
-            player.borrow_mut().compare(&dealer_score);
-        });
-
-        self.status = GameStatus::GameOver;
-    }
-
-    pub fn dealer_score(&self) -> Score {
-        score(&self.dealer_hand)
-    }
-
-    pub fn dealer_upcard(&self) -> Card {
-        self.dealer_hand[0]
-    }
-
-    fn deal_one(&mut self) {
-        self.dealer_hand.push(self.shoe.borrow_mut().one().unwrap());
     }
 }
 
