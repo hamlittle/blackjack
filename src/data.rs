@@ -1,9 +1,13 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, usize};
 
-use burn::{data::dataloader::batcher::Batcher, prelude::*};
+use burn::{
+    data::{dataloader::batcher::Batcher, dataset::Dataset},
+    prelude::*,
+};
 
 use crate::{
-    game::{Game, GameStatus, Player, Score},
+    game::{Game, GameStatus, Player},
+    model::Model,
     shoe::Shoe,
 };
 
@@ -14,8 +18,12 @@ pub struct GameBatcher<B: Backend> {
 pub struct GameBatch<B: Backend> {
     pub game: Game,
     pub player: Rc<RefCell<Player>>,
-    pub state: Tensor<B, 2>,
+    pub input: Tensor<B, 2>,
 }
+
+pub struct GameItem {}
+
+pub struct GameDataset {}
 
 impl<B: Backend> GameBatcher<B> {
     pub fn new(device: B::Device) -> Self {
@@ -23,31 +31,38 @@ impl<B: Backend> GameBatcher<B> {
     }
 }
 
-impl<B: Backend> Batcher<(), GameBatch<B>> for GameBatcher<B> {
-    fn batch(&self, _: Vec<()>) -> GameBatch<B> {
+impl<B: Backend> Batcher<GameItem, GameBatch<B>> for GameBatcher<B> {
+    fn batch(&self, items: Vec<GameItem>) -> GameBatch<B> {
+        assert!(items.len() == 1);
+
         let (game, player) = new_game();
-
-        let player_score = player.borrow().score();
-        let is_soft = match player_score {
-            Score::Soft(_) => true,
-            _ => false,
-        };
-        let dealer_upcard = game.dealer_upcard();
-
-        let state = Tensor::<B, 2>::from_data(
-            [[
-                player_score.value() as f32 / 21.0,
-                is_soft as u8 as f32,
-                dealer_upcard.rank.value() as f32 / 11.0,
-            ]],
-            &self.device,
-        );
+        let input = Model::normalize(&game, &player.borrow(), &self.device);
 
         GameBatch {
             game,
             player,
-            state,
+            input,
         }
+    }
+}
+
+impl GameDataset {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn len(&self) -> usize {
+        1_000
+    }
+}
+
+impl Dataset<GameItem> for GameDataset {
+    fn get(&self, _: usize) -> Option<GameItem> {
+        Some(GameItem {})
+    }
+
+    fn len(&self) -> usize {
+        self.len()
     }
 }
 

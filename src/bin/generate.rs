@@ -1,3 +1,5 @@
+use blackjack::config;
+use blackjack::shoe::Shoe;
 use num_format::{Locale, ToFormattedString};
 use std::path::PathBuf;
 use std::sync::mpsc;
