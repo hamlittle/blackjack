@@ -1,10 +1,13 @@
-use blackjack::{data::GameBatcher, game::Game, shoe::Shoe, training::TrainConfig};
+use blackjack::{
+    game::{game::Game, shoe::Shoe},
+    training::{data::GameBatcher, training::TrainConfig},
+};
 use burn::{
     config::Config,
     data::dataloader::batcher::Batcher,
     module::Module,
     record::{CompactRecorder, Recorder},
-    tensor::{Tensor, cast::ToElement},
+    tensor::cast::ToElement,
 };
 
 pub fn main() {

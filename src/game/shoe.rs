@@ -2,7 +2,7 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
-use crate::card::{Card, Rank, Suit};
+use super::card::{Card, Rank, Suit};
 
 #[derive(Clone, Debug)]
 pub struct Shoe {

@@ -1,11 +1,12 @@
-use blackjack::config;
-use blackjack::shoe::Shoe;
+use blackjack::game::shoe::Shoe;
 use num_format::{Locale, ToFormattedString};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{fs, thread};
 use std::{io::Write, time::Instant};
+
+mod config;
 
 fn print_progress(ndx: usize, count: usize, bytes: usize, start: Instant) {
     let elapsed = start.elapsed();

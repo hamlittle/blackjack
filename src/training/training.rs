@@ -8,7 +8,7 @@ use burn::{
     train::{LearnerBuilder, metric::LossMetric},
 };
 
-use crate::{
+use super::{
     data::{GameBatcher, GameDataset},
     model::ModelConfig,
 };

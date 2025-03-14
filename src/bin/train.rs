@@ -1,4 +1,4 @@
-use blackjack::{
+use blackjack::training::{
     model::ModelConfig,
     training::{self, TrainConfig},
 };

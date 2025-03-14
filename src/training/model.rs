@@ -12,10 +12,8 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rand::Rng;
 use strum::{EnumIter, IntoEnumIterator};
 
-use crate::{
-    data::GameBatch,
-    game::{Game, Outcome, Score},
-};
+use super::data::GameBatch;
+use crate::game::game::{Game, Outcome, Score};
 
 #[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Debug)]
 #[repr(usize)]
@@ -208,20 +206,11 @@ impl<B: Backend> Model<B> {
     }
 
     fn update_targets(&self, predicted: Tensor<B, 2>, action: usize, reward: f32) -> Tensor<B, 2> {
-        let before = predicted.clone();
-
-        let data = predicted.clone().to_data();
-        let mut data = data.to_vec::<f32>().unwrap();
+        let mut data = predicted.clone().to_data().to_vec::<f32>().unwrap();
         data[action] = reward;
+
         let data = TensorData::new(data, predicted.shape());
-
         let targets = Tensor::<B, 2>::from_data(data, &predicted.device());
-
-        let after = targets.clone();
-        // info!(
-        //     "before: {}, after: {} (action: {}, reward: {})",
-        //     before, after, action, reward
-        // );
 
         targets
     }

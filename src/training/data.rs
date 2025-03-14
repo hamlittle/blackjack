@@ -1,14 +1,15 @@
-use log::*;
-use std::cell::RefCell;
-
-use crate::{
-    game::{Game, GameStatus},
-    model::Model,
-    shoe::Shoe,
-};
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::*,
+};
+use std::cell::RefCell;
+
+use crate::{
+    game::{
+        game::{Game, GameStatus},
+        shoe::Shoe,
+    },
+    training::model::Model,
 };
 
 pub struct GameDataset {
