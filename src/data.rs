@@ -1,3 +1,6 @@
+use log::*;
+use std::cell::RefCell;
+
 use crate::{
     game::{Game, GameStatus},
     model::Model,
@@ -8,15 +11,17 @@ use burn::{
     prelude::*,
 };
 
-pub struct GameDataset {}
+pub struct GameDataset {
+    size: usize,
+}
 
 impl GameDataset {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(size: usize) -> Self {
+        Self { size }
     }
 
     pub fn len(&self) -> usize {
-        1_000
+        self.size
     }
 
     pub fn new_game(&self) -> Game {
@@ -49,17 +54,27 @@ impl Dataset<Game> for GameDataset {
 #[derive(Clone, Debug)]
 pub struct GameBatcher<B: Backend> {
     device: B::Device,
+
+    exploration: RefCell<f32>,
+    decay: f32,
+    min: f32,
 }
 
 #[derive(Clone, Debug)]
 pub struct GameBatch<B: Backend> {
     pub game: Game,
     pub input: Tensor<B, 2>,
+    pub exploration: f32,
 }
 
 impl<B: Backend> GameBatcher<B> {
-    pub fn new(device: B::Device) -> Self {
-        Self { device }
+    pub fn new(device: B::Device, exploration: f32, decay: f32, min: f32) -> Self {
+        Self {
+            device,
+            exploration: RefCell::new(exploration),
+            decay,
+            min,
+        }
     }
 }
 
@@ -70,6 +85,18 @@ impl<B: Backend> Batcher<Game, GameBatch<B>> for GameBatcher<B> {
         let game = items[0].clone();
         let input = Model::normalize(&game, &self.device);
 
-        GameBatch { game, input }
+        let mut exploration = *self.exploration.borrow() * self.decay;
+        if exploration < self.min {
+            exploration = self.min
+        }
+
+        *self.exploration.borrow_mut() = exploration;
+        // info!("exploration: {}", exploration);
+
+        GameBatch {
+            game,
+            input,
+            exploration,
+        }
     }
 }

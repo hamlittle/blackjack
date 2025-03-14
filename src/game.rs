@@ -148,6 +148,10 @@ impl Game {
         self.players[player].action_surrender()
     }
 
+    pub fn player_hand(&self, player: usize) -> Vec<Card> {
+        self.players[player].hand.clone()
+    }
+
     pub fn player_score(&self, player: usize) -> Score {
         score(&self.players[player].hand)
     }

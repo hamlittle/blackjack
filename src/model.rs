@@ -7,7 +7,9 @@ use burn::{
     tensor::{backend::AutodiffBackend, cast::ToElement},
     train::{RegressionOutput, TrainOutput, TrainStep, ValidStep},
 };
+use log::info;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use rand::Rng;
 use strum::{EnumIter, IntoEnumIterator};
 
 use crate::{
@@ -15,14 +17,14 @@ use crate::{
     game::{Game, Outcome, Score},
 };
 
-#[derive(TryFromPrimitive, EnumIter)]
+#[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Debug)]
 #[repr(usize)]
 pub enum Action {
     Hit = 0,
     Stand = 1,
-    Double = 2,
-    Split = 3,
-    Surrender = 4,
+    // Double = 2,
+    // Split = 3,
+    // Surrender = 4,
 }
 
 #[derive(IntoPrimitive, EnumIter)]
@@ -106,19 +108,34 @@ impl<B: Backend> Model<B> {
     pub fn forward_step(&self, batch: GameBatch<B>) -> RegressionOutput<B> {
         let output = self.forward(batch.input.clone());
 
-        let action = output
-            .clone()
-            .argmax(1)
-            .to_data()
-            .to_vec::<B::IntElem>()
-            .unwrap()[0]
-            .to_usize();
+        let action = if rand::rng().random::<f32>() < batch.exploration {
+            let action = rand::rng().random_range(0..Action::iter().len());
+            // info!(
+            //     "Chose random action: {:?}",
+            //     Action::try_from(action).unwrap()
+            // );
+
+            action
+        } else {
+            let action = output
+                .clone()
+                .argmax(1)
+                .flatten::<1>(0, 1)
+                .into_scalar()
+                .to_usize();
+            info!(
+                "Chose optimal action: {:?}",
+                Action::try_from(action).unwrap()
+            );
+
+            action
+        };
 
         let mut game = batch.game.clone();
-        let players = play_game(&mut game, action.try_into().unwrap());
+        let players = self.play_game(&mut game, &Action::try_from(action).unwrap());
 
-        let reward = compute_reward(self, &output.device(), &game, &players);
-        let targets = update_targets(output.clone(), action, reward);
+        let reward = self.compute_reward(&output.device(), &game, &players);
+        let targets = self.update_targets(output.clone(), action.into(), reward);
         let loss = MseLoss::new().forward(output.clone(), targets.clone(), Reduction::Mean);
 
         RegressionOutput {
@@ -126,6 +143,87 @@ impl<B: Backend> Model<B> {
             output,
             targets,
         }
+    }
+
+    fn play_game(&self, game: &mut Game, action: &Action) -> Vec<usize> {
+        match action {
+            Action::Hit => {
+                game.player_hit(0);
+                vec![0]
+            }
+            Action::Stand => {
+                game.player_stand(0);
+                game.end();
+                vec![0]
+            } // Action::Double => {
+              //     game.player_double(0);
+              //     vec![0]
+              // }
+              // Action::Split => {
+              //     let split_play = game.player_split(0);
+              //     vec![0, split_play]
+              // }
+              // Action::Surrender => {
+              //     game.player_surrender(0);
+              //     vec![0]
+              // }
+        }
+    }
+
+    fn compute_reward(&self, device: &B::Device, game: &Game, players: &[usize]) -> f32 {
+        const GAMMA: f32 = 0.99;
+
+        let (terminated, unterminated): (Vec<usize>, Vec<usize>) = players
+            .iter()
+            .partition(|player| game.player_outcome(**player).is_some());
+
+        let current_rewards: Vec<f32> = terminated
+            .into_iter()
+            .map(|player| match game.player_outcome(player).unwrap() {
+                Outcome::PlayerWin(bet) => bet,
+                Outcome::DealerWin(bet) => -bet,
+                Outcome::Push => 0.0,
+            })
+            .collect();
+
+        let future_rewards: Vec<f32> = unterminated
+            .into_iter()
+            .map(|_| {
+                let state = Model::normalize(game, device);
+                let predicted = self.forward(state);
+                let predicted_best = predicted
+                    .max_dim(1)
+                    .to_data()
+                    .to_vec::<B::FloatElem>()
+                    .unwrap()[0]
+                    .to_f32();
+
+                GAMMA * predicted_best
+            })
+            .collect();
+
+        // info!("rewards: {:?}", [&current_rewards, &future_rewards]);
+
+        [current_rewards, future_rewards].iter().flatten().sum()
+    }
+
+    fn update_targets(&self, predicted: Tensor<B, 2>, action: usize, reward: f32) -> Tensor<B, 2> {
+        let before = predicted.clone();
+
+        let data = predicted.clone().to_data();
+        let mut data = data.to_vec::<f32>().unwrap();
+        data[action] = reward;
+        let data = TensorData::new(data, predicted.shape());
+
+        let targets = Tensor::<B, 2>::from_data(data, &predicted.device());
+
+        let after = targets.clone();
+        // info!(
+        //     "before: {}, after: {} (action: {}, reward: {})",
+        //     before, after, action, reward
+        // );
+
+        targets
     }
 }
 
@@ -142,80 +240,4 @@ impl<B: Backend> ValidStep<GameBatch<B>, RegressionOutput<B>> for Model<B> {
     fn step(&self, item: GameBatch<B>) -> RegressionOutput<B> {
         self.forward_step(item)
     }
-}
-
-fn play_game(game: &mut Game, action: Action) -> Vec<usize> {
-    match Action::try_from(action).unwrap() {
-        Action::Hit => {
-            game.player_hit(0);
-            vec![0]
-        }
-        Action::Stand => {
-            game.player_stand(0);
-            vec![0]
-        }
-        Action::Double => {
-            game.player_double(0);
-            vec![0]
-        }
-        Action::Split => {
-            let split_play = game.player_split(0);
-            vec![0, split_play]
-        }
-        Action::Surrender => {
-            game.player_surrender(0);
-            vec![0]
-        }
-    }
-}
-
-fn compute_reward<B: Backend>(
-    model: &Model<B>,
-    device: &B::Device,
-    game: &Game,
-    players: &[usize],
-) -> f32 {
-    const GAMMA: f32 = 0.99;
-
-    let (terminated, unterminated): (Vec<usize>, Vec<usize>) = players
-        .iter()
-        .partition(|player| game.player_outcome(**player).is_some());
-
-    let current_rewards: Vec<f32> = terminated
-        .into_iter()
-        .map(|player| match game.player_outcome(player).unwrap() {
-            Outcome::PlayerWin(bet) => bet,
-            Outcome::DealerWin(bet) => -bet,
-            Outcome::Push => 0.0,
-        })
-        .collect();
-
-    let future_rewards: Vec<f32> = unterminated
-        .into_iter()
-        .map(|_| {
-            let state = Model::normalize(game, device);
-            let predicted = model.forward(state);
-            let predicted_best = predicted
-                .max_dim(1)
-                .to_data()
-                .to_vec::<B::FloatElem>()
-                .unwrap()[0]
-                .to_f32();
-
-            GAMMA * predicted_best
-        })
-        .collect();
-
-    [current_rewards, future_rewards].iter().flatten().sum()
-}
-
-fn update_targets<B: Backend>(predicted: Tensor<B, 2>, action: usize, reward: f32) -> Tensor<B, 2> {
-    let mut data = predicted
-        .clone()
-        .to_data()
-        .to_vec::<B::FloatElem>()
-        .unwrap();
-    data[action] = B::FloatElem::from_elem(reward);
-
-    Tensor::<B, 2>::from_data(data.as_slice(), &predicted.device())
 }
