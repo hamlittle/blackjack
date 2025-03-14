@@ -4,6 +4,7 @@ use strum::IntoEnumIterator;
 
 use crate::card::{Card, Rank, Suit};
 
+#[derive(Debug)]
 pub struct Shoe {
     cards: Vec<Card>,
     n_dealt: usize,

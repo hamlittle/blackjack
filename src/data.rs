@@ -15,12 +15,14 @@ pub struct GameBatcher<B: Backend> {
     device: B::Device,
 }
 
+#[derive(Debug)]
 pub struct GameBatch<B: Backend> {
     pub game: Game,
     pub player: Rc<RefCell<Player>>,
     pub input: Tensor<B, 2>,
 }
 
+#[derive(Clone, Debug)]
 pub struct GameItem {}
 
 pub struct GameDataset {}

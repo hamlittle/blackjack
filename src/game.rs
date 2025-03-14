@@ -5,13 +5,14 @@ use crate::{
     shoe::Shoe,
 };
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum GameStatus {
     PlaceBets,
     PlayerTurn,
     GameOver,
 }
 
+#[derive(Debug)]
 pub struct Game {
     shoe: Rc<RefCell<Shoe>>,
     dealer_hand: Vec<Card>,
@@ -19,6 +20,7 @@ pub struct Game {
     status: GameStatus,
 }
 
+#[derive(Debug)]
 pub struct Player {
     shoe: Rc<RefCell<Shoe>>,
     hand: Vec<Card>,
@@ -27,7 +29,7 @@ pub struct Player {
     outcome: Option<Outcome>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Outcome {
     PlayerWin(f32),
     DealerWin(f32),
