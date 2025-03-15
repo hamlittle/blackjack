@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct Data {
     pub shoe_size: usize,
     pub shoe_count: usize,
+    pub no_blackjack: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

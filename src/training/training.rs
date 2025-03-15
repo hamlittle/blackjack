@@ -155,9 +155,9 @@ impl Trainer {
 
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
-                    epoch: epoch,
+                    epoch: epoch + 1,
                     epoch_total: self.config.num_epochs,
-                    iteration,
+                    iteration: iteration + 1,
                     lr: Some(weights.learning_rate),
                 };
                 renderer.update_train(MetricState::Numeric(
@@ -170,9 +170,9 @@ impl Trainer {
                 ));
                 renderer.render_train(TrainingProgress {
                     progress: batch_iter.progress(),
-                    epoch,
+                    epoch: epoch + 1,
                     epoch_total: self.config.num_epochs,
-                    iteration,
+                    iteration: iteration + 1,
                 });
 
                 iteration += 1;
@@ -182,7 +182,7 @@ impl Trainer {
             let mut iteration = 0;
 
             while let Some(batch) = batch_iter.next() {
-                let weights = self.weights(epoch, iteration);
+                let weights = self.weights(epoch, iteration * self.config.batch_size);
                 let regression = learner.valid_step(&batch, &weights);
 
                 let metadata = MetricMetadata {
@@ -245,8 +245,8 @@ impl Trainer {
             &self.config.weights.last().unwrap()
         };
 
-        let eps =
-            (config.eps * config.eps_decay.powi(iteration.try_into().unwrap())).max(config.eps_min);
+        let progress = iteration * self.config.batch_size;
+        let eps = (config.eps * config.eps_decay.powi(progress as i32)).max(config.eps_min);
 
         Weights {
             learning_rate: config.learning_rate,

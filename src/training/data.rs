@@ -31,8 +31,13 @@ impl GameDataset {
             .lines()
             .par_bridge()
             .map(|line| {
-                let shoe: Shoe = rmp_serde::from_slice(line.unwrap().as_bytes()).unwrap();
-                Game::new(shoe)
+                let shoe: Shoe = serde_json::from_str(&line.unwrap()).unwrap();
+                // rmp_serde::from_slice(line.unwrap().as_bytes()).unwrap();
+                let mut game = Game::new(shoe);
+                game.add_player(1.0);
+                game.start();
+
+                game
             })
             .collect();
 
@@ -82,6 +87,7 @@ impl<B: Backend> Batcher<Game, GameBatch<B>> for GameBatcher<B> {
     fn batch(&self, items: Vec<Game>) -> GameBatch<B> {
         let input: Vec<_> = items
             .par_iter()
+            // .iter()
             .map(|game| Model::normalize(game, &self.device))
             .collect();
         let input = Tensor::cat(input, 0);

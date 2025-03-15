@@ -1,6 +1,7 @@
 [data]
 shoe_size = 1
-shoe_count = 5_000
+shoe_count = 25_000
+no_blackjack = true
 
 [generate]
 workers = 20

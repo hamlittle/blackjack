@@ -296,6 +296,7 @@ dependencies = [
  "rayon",
  "rmp-serde",
  "serde",
+ "serde_json",
  "strum 0.27.1",
  "toml",
 ]

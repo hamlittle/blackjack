@@ -1,5 +1,7 @@
+use blackjack::game::card::Card;
 use blackjack::game::shoe::Shoe;
 use num_format::{Locale, ToFormattedString};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -32,10 +34,14 @@ fn print_progress(ndx: usize, count: usize, bytes: usize, start: Instant) {
     );
 }
 
+fn blackjack(cards: [Card; 2]) -> bool {
+    cards[0].rank.value() + cards[1].rank.value() == 21
+}
+
 fn main() {
     let config = config::load("src/bin/generate/config.toml").unwrap();
     let gen_file = PathBuf::from(format!(
-        "{}/shoes.{}-{}.ndmpk",
+        "{}/shoes.{}-{}.ndjson",
         config.generate.out_dir, config.data.shoe_size, config.data.shoe_count
     ));
 
@@ -61,7 +67,14 @@ fn main() {
                     let mut shoe = Shoe::new(shoe_size);
                     shoe.shuffle(&mut rng);
 
-                    let data = rmp_serde::encode::to_vec(&shoe).unwrap();
+                    if config.data.no_blackjack {
+                        while blackjack(shoe.two().unwrap()) || blackjack(shoe.two().unwrap()) {
+                            shoe.shuffle(&mut rng);
+                        }
+                    }
+
+                    let data = serde_json::to_string(&shoe).unwrap();
+                    // let data = rmp_serde::encode::to_vec(&shoe).unwrap();
 
                     tx.send(data).unwrap();
                 });
@@ -74,7 +87,8 @@ fn main() {
     let mut progress = Instant::now();
     let mut bytes: usize = 0;
     rx.iter().enumerate().for_each(|(ndx, shoe)| {
-        let data = [shoe.as_slice(), b"\n"].concat();
+        let data = [shoe.as_bytes(), b"\n"].concat();
+        // let data = [shoe.as_slice(), b"\n"].concat();
         gen_file.write_all(&data).unwrap();
 
         bytes += data.len();
