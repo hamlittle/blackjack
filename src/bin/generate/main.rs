@@ -33,7 +33,7 @@ fn print_progress(ndx: usize, count: usize, bytes: usize, start: Instant) {
 }
 
 fn main() {
-    let config = config::load("config.toml").unwrap();
+    let config = config::load("src/bin/generate/config.toml").unwrap();
     let gen_file = PathBuf::from(format!(
         "{}/shoes.{}-{}.ndmpk",
         config.generate.out_dir, config.data.shoe_size, config.data.shoe_count

@@ -1,8 +1,8 @@
 [data]
 shoe_size = 1
-shoe_count = 1_000_000
+shoe_count = 5_000
 
 [generate]
 workers = 20
-out_dir = "/tmp"
+out_dir = "out/"
 progress = 1     # number of seconds between progress updates, 0 to disable
