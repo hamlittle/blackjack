@@ -1,5 +1,5 @@
 use burn::{
-    nn::{Linear, LinearConfig, Relu},
+    nn::{LeakyRelu, LeakyReluConfig, Linear, LinearConfig},
     prelude::*,
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -10,32 +10,36 @@ use crate::game::game::{Game, Score};
 #[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Action {
-    Hit = 0,
-    Stand = 1,
-    // Double = 2,
-    // Split = 3,
-    // Surrender = 4,
+    Hit,
+    Stand,
+    Double,
+    // Split,
+    Surrender,
 }
 
 #[derive(IntoPrimitive, EnumIter)]
 #[repr(usize)]
 enum Input {
-    PlayerScore = 0,
-    IsSoft = 1,
-    DealerUpCard = 2,
+    PlayerScore,
+    IsSoft,
+    DealerUpCard,
 }
 
 #[derive(Config, Debug)]
 pub struct ModelConfig {
-    #[config(default = 64)]
+    #[config(default = 128)]
     hidden_size: usize,
+
+    #[config(default = 0.01)]
+    activation_slope: f64,
 }
 
 #[derive(Module, Debug)]
 pub struct Model<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
-    activation: Relu,
+    fc3: Linear<B>,
+    activation: LeakyRelu,
     advantage: Linear<B>,
     value: Linear<B>,
 }
@@ -50,7 +54,10 @@ impl<B: Backend> Model<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         let fc1 = LinearConfig::new(Model::<B>::input_size(), config.hidden_size).init(device);
         let fc2 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
-        let activation = Relu::new();
+        let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
+        let activation = LeakyReluConfig::new()
+            .with_negative_slope(config.activation_slope)
+            .init();
         let advantage =
             LinearConfig::new(config.hidden_size, Model::<B>::output_size()).init(device);
         let value = LinearConfig::new(config.hidden_size, 1).init(device);
@@ -58,6 +65,7 @@ impl<B: Backend> Model<B> {
         Self {
             fc1,
             fc2,
+            fc3,
             activation,
             advantage,
             value,
@@ -92,7 +100,10 @@ impl<B: Backend> Model<B> {
 
     pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.fc1.forward(input);
+        let x = self.activation.forward(x);
         let x = self.fc2.forward(x);
+        let x = self.activation.forward(x);
+        let x = self.fc3.forward(x);
         let x = self.activation.forward(x);
         let advantage = self.advantage.forward(x.clone());
         let value = self.value.forward(x);

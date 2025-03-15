@@ -97,7 +97,7 @@ impl Trainer {
             .save(format!("{}/config.json", self.config.artifact_dir))
             .expect("Config should be saved successfully");
 
-        B::seed(self.config.seed);
+        // B::seed(self.config.seed);
 
         info!("Loading datasets...");
         let mut start = Instant::now();

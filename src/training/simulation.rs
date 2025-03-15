@@ -21,18 +21,19 @@ impl Simulation {
                 self.game.player_stand(0);
                 self.game.end();
                 vec![self.game.player_outcome(0)]
-            } // Action::Double => {
-              //     game.player_double(0);
-              //     vec![0]
-              // }
-              // Action::Split => {
-              //     let split_play = game.player_split(0);
-              //     vec![0, split_play]
-              // }
-              // Action::Surrender => {
-              //     game.player_surrender(0);
-              //     vec![0]
-              // }
+            }
+            Action::Double => {
+                self.game.player_double(0);
+                vec![self.game.player_outcome(0)]
+            }
+            // Action::Split => {
+            //     self.game.player_split(0);
+            //     vec![self.game.player_outcome(0), self.game.player_outcome(1)]
+            // }
+            Action::Surrender => {
+                self.game.player_surrender(0);
+                vec![self.game.player_outcome(0)]
+            }
         }
     }
 }

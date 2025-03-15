@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
-burn = { version = "0.16.0", features = ["train", "wgpu"] }
+burn = { version = "0.16.0", features = ["candle", "metal", "train", "wgpu"] }
 num-format = "0.4.4"
 rand = "0.9.0"
 rmp-serde = "1.3.0"
