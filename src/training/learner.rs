@@ -3,7 +3,7 @@ use std::iter::zip;
 use burn::{
     nn::loss::{MseLoss, Reduction},
     optim::{GradientsParams, Optimizer},
-    tensor::{Tensor, backend::AutodiffBackend, cast::ToElement},
+    tensor::{Tensor, TensorData, backend::AutodiffBackend, cast::ToElement},
     train::RegressionOutput,
 };
 use rand::Rng;
@@ -30,7 +30,7 @@ where
 pub struct Weights {
     pub learning_rate: f64,
     pub gamma: f32,
-    pub eps: f32,
+    pub eps: f64,
 }
 
 impl<B, O> Learner<B, O>
@@ -78,13 +78,13 @@ where
         self.model.clone()
     }
 
-    fn apply_exploration(&self, decisions: Tensor<B, 2>, exploration: f32) -> Vec<Action> {
+    fn apply_exploration(&self, decisions: Tensor<B, 2>, exploration: f64) -> Vec<Action> {
         let best_decision = decisions.argmax(1).to_data();
 
         best_decision
             .iter()
             .map(|action: B::IntElem| {
-                if rand::rng().random::<f32>() < exploration {
+                if rand::rng().random::<f64>() < exploration {
                     rand::rng().random_range(0..Model::<B>::output_size())
                 } else {
                     action.to_usize()
@@ -97,70 +97,99 @@ where
     fn compute_reward<'a, I>(&self, batch: I, discount: f32) -> Vec<f32>
     where
         I: IntoIterator<Item = (&'a Game, &'a Action)>,
+        I::IntoIter: Send,
     {
-        batch
+        // batch
+        //     .into_iter()
+        //     .map(|(game, action)| (game, Simulation::new(game.clone()).forward(*action)))
+        //     .map(|(game, outcomes)| {
+        //         outcomes
+        //             .into_iter()
+        //             .map(|outcome| match outcome {
+        //                 Some(outcome) => self.compute_current_reward(outcome),
+        //                 None => self.compute_future_reward(game, discount),
+        //             })
+        //             .sum()
+        //     })
+        //     .collect()
+
+        // Get the outcomes for each game (may or may not be terminal)
+        let outcomes: Vec<_> = batch
             .into_iter()
             .map(|(game, action)| (game, Simulation::new(game.clone()).forward(*action)))
-            .map(|(game, outcomes)| {
-                outcomes
-                    .into_iter()
-                    .map(|outcome| match outcome {
-                        Some(outcome) => self.compute_current_reward(outcome),
-                        None => self.compute_future_reward(game, discount),
-                    })
-                    .sum()
-            })
-            .collect()
+            .collect();
+
+        // Store original indices to maintain order
+        let (terminated, unterminated): (Vec<_>, Vec<_>) = outcomes
+            .iter()
+            .enumerate()
+            .partition(|(_, (_, outcomes))| outcomes.iter().all(|outcome| outcome.is_some()));
+
+        // Compute rewards for terminated hands (in order)
+        let mut rewards = vec![0.0; outcomes.len()];
+
+        for (ndx, (_, outcomes)) in &terminated {
+            rewards[*ndx] = outcomes
+                .iter()
+                .map(|outcome| self.compute_current_reward(outcome.unwrap()))
+                .sum();
+        }
+
+        // If no unterminated states exist, return immediately
+        if unterminated.is_empty() {
+            return rewards;
+        }
+
+        // Collect unterminated hands into a batch tensor
+        let states: Vec<Tensor<B, 2>> = unterminated
+            .iter()
+            .map(|(_, (game, _))| Model::normalize(game, &self.device))
+            .collect();
+
+        let batch_tensor = Tensor::cat(states, 0);
+
+        // Single forward pass for all unterminated states
+        let predicted_qs = self.model.forward(batch_tensor);
+
+        // Extract max Q-values for each state
+        let predicted_rewards = predicted_qs.max_dim(1).to_data().to_vec::<f32>().unwrap();
+
+        // Assign discounted rewards in the correct order
+        for (i, (ndx, _)) in unterminated.iter().enumerate() {
+            rewards[*ndx] = self.compute_future_reward(predicted_rewards[i], discount)
+        }
+
+        rewards
     }
 
     fn compute_current_reward(&self, outcome: Outcome) -> f32 {
         match outcome {
             Outcome::PlayerWin(amount) => amount,
-            Outcome::DealerWin(amount) => -amount,
             Outcome::Push => 0.0,
+            Outcome::DealerWin(bet) => -bet,
         }
     }
 
-    fn compute_future_reward(&self, game: &Game, discount: f32) -> f32 {
-        let state = Model::normalize(game, &self.device);
-
-        let predicted = self.model.forward(state);
-        let predicted_best = predicted
-            .max_dim(1)
-            .flatten::<1>(0, 1)
-            .into_scalar()
-            .to_f32();
-
-        discount * predicted_best
+    fn compute_future_reward(&self, predicted: f32, discount: f32) -> f32 {
+        discount * predicted
     }
 
     fn update_target<'a, I>(&self, target: Tensor<B, 2>, batch: I) -> Tensor<B, 2>
     where
         I: IntoIterator<Item = (&'a Action, &'a f32)>,
     {
+        let dims = target.dims();
+        let mut data = target.to_data().to_vec::<f32>().unwrap();
+
         batch
             .into_iter()
-            .map(|(action, reward)| (usize::from(*action), reward))
             .enumerate()
-            .fold(target, |target, (channel, (action, reward))| {
-                target.slice_assign(
-                    [channel..channel + 1, action..action + 1],
-                    Tensor::<B, 2>::from_floats([[*reward]], &self.device),
-                )
-            })
+            .for_each(|(channel, (action, reward))| {
+                let row: usize = channel * dims[1];
+                let col: usize = (*action).try_into().unwrap();
+                data[row + col] = *reward;
+            });
 
-        // let dims = target.dims();
-        // let mut data = target.to_data().to_vec::<f32>().unwrap();
-
-        // batch
-        //     .into_iter()
-        //     .enumerate()
-        //     .for_each(|(channel, (action, reward))| {
-        //         let row: usize = channel * dims[1];
-        //         let col: usize = (*action).try_into().unwrap();
-        //         data[row + col] = *reward;
-        //     });
-
-        // Tensor::<B, 2>::from_data(TensorData::new(data, dims), &self.device)
+        Tensor::<B, 2>::from_data(TensorData::new(data, dims), &self.device)
     }
 }

@@ -21,7 +21,8 @@ fn main() {
         weights::WEIGHTS.into(),
     )
     .with_batch_size(512)
-    .with_num_epochs(10);
+    .with_num_epochs(10)
+    .with_num_workers(8);
 
     let trainer = trainer.init();
     trainer.run::<Autodiff<Candle>>(device);

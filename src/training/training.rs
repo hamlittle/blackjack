@@ -9,7 +9,10 @@ use burn::{
     tensor::backend::AutodiffBackend,
     train::{
         TrainingInterrupter,
-        metric::{IterationSpeedMetric, LossInput, LossMetric, Metric, MetricMetadata, Numeric},
+        metric::{
+            IterationSpeedMetric, LossInput, LossMetric, Metric, MetricMetadata, Numeric,
+            state::{FormatOptions, NumericMetricState},
+        },
         renderer::{MetricState, MetricsRenderer, TrainingProgress, tui::TuiMetricsRenderer},
     },
 };
@@ -34,15 +37,15 @@ pub struct TrainingWeightsConfig {
 
     #[config(default = 0.0)]
     /// set the exploration rate
-    pub eps: f32,
+    pub eps: f64,
 
     #[config(default = 0.0)]
     /// set the exploration decay rate (linear decay each for each training batch)
-    pub eps_decay: f32,
+    pub eps_decay: f64,
 
     #[config(default = 0.0)]
     /// exploration rate floor
-    pub eps_min: f32,
+    pub eps_min: f64,
 }
 
 #[derive(Config)]
@@ -141,17 +144,24 @@ impl Trainer {
 
         let interuptor = TrainingInterrupter::new();
         let mut renderer = TuiMetricsRenderer::new(interuptor, None);
-        let mut loss_metric = LossMetric::new();
-        let mut iteration_metric = IterationSpeedMetric::new();
 
         for epoch in 0..self.config.num_epochs {
+            let mut loss_metric = (LossMetric::new(), LossMetric::new());
+            let mut iteration_metric = (IterationSpeedMetric::new(), IterationSpeedMetric::new());
+            let mut batch_metric = (NumericMetricState::new(), NumericMetricState::new());
+            let mut exploration_metric = (NumericMetricState::new(), NumericMetricState::new());
+
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
 
             while let Some(batch) = batch_iter.next() {
+                let start = Instant::now();
+
                 let weights = self.weights(epoch, iteration);
                 let regression = learner.train_step(&batch, &weights);
                 learner = learner.optim(&regression, &weights);
+
+                let elapsed = start.elapsed();
 
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
@@ -161,12 +171,30 @@ impl Trainer {
                     lr: Some(weights.learning_rate),
                 };
                 renderer.update_train(MetricState::Numeric(
-                    loss_metric.update(&LossInput::<B>::new(regression.loss), &metadata),
-                    loss_metric.value(),
+                    loss_metric
+                        .0
+                        .update(&LossInput::<B>::new(regression.loss), &metadata),
+                    loss_metric.0.value(),
                 ));
                 renderer.update_train(MetricState::Numeric(
-                    iteration_metric.update(&(), &metadata),
-                    iteration_metric.value(),
+                    iteration_metric.0.update(&(), &metadata),
+                    iteration_metric.0.value(),
+                ));
+                renderer.update_train(MetricState::Numeric(
+                    batch_metric.0.update(
+                        self.config.batch_size as f64 / elapsed.as_secs_f64(),
+                        self.config.batch_size,
+                        FormatOptions::new("batch").unit("item/second").precision(0),
+                    ),
+                    self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
+                ));
+                renderer.update_train(MetricState::Numeric(
+                    exploration_metric.0.update(
+                        weights.eps as f64,
+                        self.config.batch_size,
+                        FormatOptions::new("exploration").precision(2),
+                    ),
+                    weights.eps as f64,
                 ));
                 renderer.render_train(TrainingProgress {
                     progress: batch_iter.progress(),
@@ -182,8 +210,12 @@ impl Trainer {
             let mut iteration = 0;
 
             while let Some(batch) = batch_iter.next() {
-                let weights = self.weights(epoch, iteration * self.config.batch_size);
+                let start = Instant::now();
+
+                let weights = self.weights(epoch, iteration);
                 let regression = learner.valid_step(&batch, &weights);
+
+                let elapsed = start.elapsed();
 
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
@@ -193,12 +225,30 @@ impl Trainer {
                     lr: Some(weights.learning_rate),
                 };
                 renderer.update_valid(MetricState::Numeric(
-                    loss_metric.update(&LossInput::<B>::new(regression.loss), &metadata),
-                    loss_metric.value(),
+                    loss_metric
+                        .1
+                        .update(&LossInput::<B>::new(regression.loss), &metadata),
+                    loss_metric.1.value(),
                 ));
                 renderer.update_valid(MetricState::Numeric(
-                    iteration_metric.update(&(), &metadata),
-                    iteration_metric.value(),
+                    iteration_metric.1.update(&(), &metadata),
+                    iteration_metric.1.value(),
+                ));
+                renderer.update_valid(MetricState::Numeric(
+                    batch_metric.1.update(
+                        self.config.batch_size as f64 / elapsed.as_secs_f64(),
+                        self.config.batch_size,
+                        FormatOptions::new("batch").unit("item/second").precision(2),
+                    ),
+                    self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
+                ));
+                renderer.update_valid(MetricState::Numeric(
+                    exploration_metric.1.update(
+                        0 as f64,
+                        self.config.batch_size,
+                        FormatOptions::new("exploration").precision(2),
+                    ),
+                    weights.eps as f64,
                 ));
                 renderer.render_valid(TrainingProgress {
                     progress: batch_iter.progress(),
@@ -209,6 +259,14 @@ impl Trainer {
 
                 iteration += 1;
             }
+
+            let model_trained = learner.model();
+            model_trained
+                .save_file(
+                    format!("{}/model-{}.", self.config.artifact_dir, epoch),
+                    &CompactRecorder::new(),
+                )
+                .expect("Failed to save trained model");
 
             info!("OK! Finished epoch ({:?})...", start.elapsed());
             start = Instant::now();
@@ -245,8 +303,7 @@ impl Trainer {
             &self.config.weights.last().unwrap()
         };
 
-        let progress = iteration * self.config.batch_size;
-        let eps = (config.eps * config.eps_decay.powi(progress as i32)).max(config.eps_min);
+        let eps = (config.eps * config.eps_decay.powi(iteration as i32)).max(config.eps_min);
 
         Weights {
             learning_rate: config.learning_rate,

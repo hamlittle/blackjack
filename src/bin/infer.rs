@@ -25,12 +25,12 @@ pub fn main() {
         .expect("Config should exist for the model.");
 
     let record = CompactRecorder::new()
-        .load(format!("/tmp/training/model").into(), &device)
+        .load(format!("/tmp/training/model-1.mpk").into(), &device)
         .expect("Trained model should exist.");
 
     let model = config.model.init::<Candle>(&device).load_record(record);
 
-    let dataset = GameDataset::new(Path::new("out/shoes.1-5000.ndjson"), 1000);
+    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), 10000);
     let batcher = GameBatcher::<Candle>::new(device.clone());
     let loader = DataLoaderBuilder::new(batcher)
         .batch_size(1)

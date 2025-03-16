@@ -1,7 +1,6 @@
 use blackjack::game::card::Card;
 use blackjack::game::shoe::Shoe;
 use num_format::{Locale, ToFormattedString};
-use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
