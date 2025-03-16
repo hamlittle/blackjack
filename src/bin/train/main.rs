@@ -16,12 +16,12 @@ fn main() {
         String::from("/tmp/training"),
         model,
         optimizer,
-        (PathBuf::from("out/shoes.1-25000000.ndjson"), 25_000_000),
+        (PathBuf::from("out/shoes.1-100000000.ndjson"), 100_000_000),
         (PathBuf::from("out/shoes.1-1000000.ndjson"), 1_000_000),
         weights::WEIGHTS.into(),
     )
-    .with_batch_size(512)
-    .with_num_epochs(10)
+    .with_batch_size(1024)
+    .with_num_epochs(7)
     .with_num_workers(8);
 
     let trainer = trainer.init();

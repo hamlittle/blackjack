@@ -21,9 +21,11 @@ where
     B: AutodiffBackend,
     O: Optimizer<Model<B>, B>,
 {
-    model: Model<B>,
+    online: Model<B>,
+    target: Model<B>,
     optim: O,
     device: B::Device,
+    iteration: usize,
 }
 
 #[derive(Copy, Clone)]
@@ -31,6 +33,7 @@ pub struct Weights {
     pub learning_rate: f64,
     pub gamma: f32,
     pub eps: f64,
+    pub target_update: u32,
 }
 
 impl<B, O> Learner<B, O>
@@ -40,9 +43,11 @@ where
 {
     pub fn new(model: Model<B>, optim: O, device: B::Device) -> Self {
         Self {
-            model: model,
+            online: model.clone(),
+            target: model,
             optim,
             device,
+            iteration: 0,
         }
     }
 
@@ -54,7 +59,7 @@ where
     }
 
     pub fn train_step(&self, batch: &GameBatch<B>, weights: &Weights) -> RegressionOutput<B> {
-        let decisions = self.model.forward(batch.input.clone());
+        let decisions = self.online.forward(batch.input.clone());
         let actions = self.apply_exploration(decisions.clone(), weights.eps);
         let rewards = self.compute_reward(zip(&batch.games, &actions), weights.gamma);
         let targets = self.update_target(decisions.clone(), zip(&actions, &rewards));
@@ -67,15 +72,25 @@ where
         }
     }
 
-    pub fn optim(mut self, regression: &RegressionOutput<B>, weights: &Weights) -> Self {
-        let grads = GradientsParams::from_grads(regression.loss.backward(), &self.model);
-        self.model = self.optim.step(weights.learning_rate, self.model, grads);
+    pub fn optim(
+        mut self,
+        regression: &RegressionOutput<B>,
+        weights: &Weights,
+        iteration: usize,
+    ) -> Self {
+        let grads = GradientsParams::from_grads(regression.loss.backward(), &self.online);
+        self.online = self.optim.step(weights.learning_rate, self.online, grads);
+
+        if iteration - self.iteration > weights.target_update as usize {
+            self.target = self.online.clone();
+            self.iteration = iteration;
+        }
 
         self
     }
 
     pub fn model(&self) -> Model<B> {
-        self.model.clone()
+        self.online.clone()
     }
 
     fn apply_exploration(&self, decisions: Tensor<B, 2>, exploration: f64) -> Vec<Action> {
@@ -149,7 +164,7 @@ where
         let batch_tensor = Tensor::cat(states, 0);
 
         // Single forward pass for all unterminated states
-        let predicted_qs = self.model.forward(batch_tensor);
+        let predicted_qs = self.target.forward(batch_tensor);
 
         // Extract max Q-values for each state
         let predicted_rewards = predicted_qs.max_dim(1).to_data().to_vec::<f32>().unwrap();

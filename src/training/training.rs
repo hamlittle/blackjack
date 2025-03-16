@@ -46,6 +46,10 @@ pub struct TrainingWeightsConfig {
     #[config(default = 0.0)]
     /// exploration rate floor
     pub eps_min: f64,
+
+    #[config(default = 100)]
+    /// exploration rate floor
+    pub target_update: u32,
 }
 
 #[derive(Config)]
@@ -149,7 +153,9 @@ impl Trainer {
             let mut loss_metric = (LossMetric::new(), LossMetric::new());
             let mut iteration_metric = (IterationSpeedMetric::new(), IterationSpeedMetric::new());
             let mut batch_metric = (NumericMetricState::new(), NumericMetricState::new());
-            let mut exploration_metric = (NumericMetricState::new(), NumericMetricState::new());
+            let mut exploration_metric = NumericMetricState::new();
+            let mut discount_metric = NumericMetricState::new();
+            let mut learning_metric = NumericMetricState::new();
 
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
@@ -159,7 +165,7 @@ impl Trainer {
 
                 let weights = self.weights(epoch, iteration);
                 let regression = learner.train_step(&batch, &weights);
-                learner = learner.optim(&regression, &weights);
+                learner = learner.optim(&regression, &weights, iteration);
 
                 let elapsed = start.elapsed();
 
@@ -189,12 +195,28 @@ impl Trainer {
                     self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
                 ));
                 renderer.update_train(MetricState::Numeric(
-                    exploration_metric.0.update(
+                    exploration_metric.update(
                         weights.eps as f64,
                         self.config.batch_size,
                         FormatOptions::new("exploration").precision(2),
                     ),
                     weights.eps as f64,
+                ));
+                renderer.update_train(MetricState::Numeric(
+                    discount_metric.update(
+                        weights.gamma as f64,
+                        self.config.batch_size,
+                        FormatOptions::new("discount").precision(2),
+                    ),
+                    weights.gamma as f64,
+                ));
+                renderer.update_train(MetricState::Numeric(
+                    learning_metric.update(
+                        weights.learning_rate as f64,
+                        self.config.batch_size,
+                        FormatOptions::new("learning rate").precision(2),
+                    ),
+                    weights.learning_rate as f64,
                 ));
                 renderer.render_train(TrainingProgress {
                     progress: batch_iter.progress(),
@@ -241,14 +263,6 @@ impl Trainer {
                         FormatOptions::new("batch").unit("item/second").precision(2),
                     ),
                     self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
-                ));
-                renderer.update_valid(MetricState::Numeric(
-                    exploration_metric.1.update(
-                        0 as f64,
-                        self.config.batch_size,
-                        FormatOptions::new("exploration").precision(2),
-                    ),
-                    weights.eps as f64,
                 ));
                 renderer.render_valid(TrainingProgress {
                     progress: batch_iter.progress(),
@@ -309,6 +323,7 @@ impl Trainer {
             learning_rate: config.learning_rate,
             gamma: config.gamma,
             eps,
+            target_update: config.target_update,
         }
     }
 

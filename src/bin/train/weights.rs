@@ -1,16 +1,13 @@
 use blackjack::training::training::TrainingWeightsConfig;
 
 #[rustfmt::skip]
-pub const WEIGHTS: [TrainingWeightsConfig; 10] =
+pub const WEIGHTS: [TrainingWeightsConfig; 7] =
 [
-    TrainingWeightsConfig { learning_rate: 3e-3, gamma: 0.99, eps: 1.0, eps_decay: 0.9999, eps_min: 0.1 },
-    TrainingWeightsConfig { learning_rate: 2.5e-3, gamma: 0.99, eps: 0.9, eps_decay: 0.9999, eps_min: 0.1 },
-    TrainingWeightsConfig { learning_rate: 2e-3, gamma: 0.99, eps: 0.8, eps_decay: 0.9999, eps_min: 0.1 },
-    TrainingWeightsConfig { learning_rate: 1.5e-3, gamma: 0.99, eps: 0.7, eps_decay: 0.9999, eps_min: 0.1 },
-    TrainingWeightsConfig { learning_rate: 1e-3, gamma: 0.99, eps: 0.6, eps_decay: 0.9999, eps_min: 0.05 },
-    TrainingWeightsConfig { learning_rate: 7.5e-4, gamma: 0.99, eps: 0.5, eps_decay: 0.9999, eps_min: 0.05 },
-    TrainingWeightsConfig { learning_rate: 5e-4, gamma: 0.99, eps: 0.4, eps_decay: 0.9999, eps_min: 0.05 },
-    TrainingWeightsConfig { learning_rate: 3e-4, gamma: 0.99, eps: 0.3, eps_decay: 0.9999, eps_min: 0.05 },
-    TrainingWeightsConfig { learning_rate: 2e-4, gamma: 0.99, eps: 0.2, eps_decay: 0.9999, eps_min: 0.05 },
-    TrainingWeightsConfig { learning_rate: 1e-4, gamma: 0.99, eps: 0.1, eps_decay: 0.9999, eps_min: 0.05 },
+    TrainingWeightsConfig { learning_rate: 1.0e-8, gamma: 0.99, eps: 1.00, eps_decay: 0.999995, eps_min: 0.05, target_update: 10 },
+    TrainingWeightsConfig { learning_rate: 1.0e-8, gamma: 0.99, eps: 0.80, eps_decay: 0.999995, eps_min: 0.05, target_update: 10 },
+    TrainingWeightsConfig { learning_rate: 1.0e-8, gamma: 0.99, eps: 0.60, eps_decay: 0.999995, eps_min: 0.05, target_update: 10 },
+    TrainingWeightsConfig { learning_rate: 1.0e-8, gamma: 0.99, eps: 0.40, eps_decay: 0.999995, eps_min: 0.05, target_update: 20 },
+    TrainingWeightsConfig { learning_rate: 8.0e-9, gamma: 0.99, eps: 0.20, eps_decay: 0.999995, eps_min: 0.05, target_update: 50 },
+    TrainingWeightsConfig { learning_rate: 5.0e-9, gamma: 0.99, eps: 0.10, eps_decay: 0.999995, eps_min: 0.05, target_update: 100 },
+    TrainingWeightsConfig { learning_rate: 1.0e-9, gamma: 0.99, eps: 0.10, eps_decay: 0.999995, eps_min: 0.05, target_update: 100 },
 ];

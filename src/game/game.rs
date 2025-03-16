@@ -177,7 +177,7 @@ impl Player {
 
     fn action_hit(&mut self, card: Card) -> Option<Outcome> {
         if self.stand {
-            panic!("Cannot deal after standing.");
+            panic!("Cannot hit after standing.");
         }
 
         self.hand.push(card);

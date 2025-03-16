@@ -7,7 +7,7 @@ use strum::{EnumIter, IntoEnumIterator};
 
 use crate::game::game::{Game, Score};
 
-#[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, Debug)]
+#[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, PartialEq, Debug)]
 #[repr(usize)]
 pub enum Action {
     Hit,
@@ -88,7 +88,7 @@ impl<B: Backend> Model<B> {
                     Score::Soft(_) => true as u8 as f32,
                     Score::Hard(_) => false as u8 as f32,
                 },
-                Input::DealerUpCard => game.dealer_upcard().rank.value() as f32,
+                Input::DealerUpCard => game.dealer_upcard().rank.value() as f32 / 11.0 as f32,
             })
             .map(|elem| B::FloatElem::from_elem(elem))
             .collect();

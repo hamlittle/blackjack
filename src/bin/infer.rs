@@ -1,10 +1,13 @@
 use std::path::Path;
 
 use blackjack::{
-    game::{game::Game, shoe::Shoe},
+    game::{
+        game::{Game, Outcome},
+        shoe::Shoe,
+    },
     training::{
         data::{GameBatcher, GameDataset},
-        model::Action,
+        model::{Action, Model},
         training::TrainingConfig,
     },
 };
@@ -25,12 +28,13 @@ pub fn main() {
         .expect("Config should exist for the model.");
 
     let record = CompactRecorder::new()
-        .load(format!("/tmp/training/model-1.mpk").into(), &device)
+        .load(format!("/tmp/training/model.mpk").into(), &device)
+        // .load(format!("training/25_000h.10e/model.mpk").into(), &device)
         .expect("Trained model should exist.");
 
     let model = config.model.init::<Candle>(&device).load_record(record);
 
-    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), 10000);
+    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), 25_000);
     let batcher = GameBatcher::<Candle>::new(device.clone());
     let loader = DataLoaderBuilder::new(batcher)
         .batch_size(1)
@@ -38,13 +42,65 @@ pub fn main() {
         .build(dataset);
 
     let mut action_counts = vec![0; Action::iter().len()];
+    let mut win_loss = 0.0;
     for batch in loader.iter() {
-        let output = model.forward(batch.input);
-        let action = output.argmax(1).flatten::<1>(0, 1).into_scalar().to_usize();
+        let mut game_round = 0;
+        let mut game = batch.games[0].clone();
+        let mut game_running = true;
 
-        action_counts[action] += 1;
+        while game_running {
+            let state = Model::<Candle>::normalize(&game, &device);
+            let output = model.forward(state);
+
+            let action = output.argmax(1).flatten::<1>(0, 1).into_scalar().to_usize();
+            let mut action = Action::try_from(action).unwrap();
+
+            if game_round > 0 {
+                if action == Action::Double {
+                    action = Action::Hit;
+                }
+
+                if action == Action::Surrender {
+                    action = Action::Stand;
+                }
+            }
+
+            match action {
+                Action::Hit => {
+                    game.player_hit(0);
+                }
+                Action::Stand => {
+                    game.player_stand(0);
+                    game_running = false;
+                }
+                Action::Double => {
+                    game.player_double(0);
+                    game_running = false;
+                }
+                Action::Surrender => {
+                    game.player_surrender(0);
+                    game_running = false;
+                }
+            }
+
+            action_counts[usize::from(action)] += 1;
+
+            if game.player_outcome(0).is_some() {
+                game_running = false;
+            }
+
+            game_round += 1;
+        }
+
+        game.end();
+        win_loss += match game.player_outcome(0).unwrap() {
+            Outcome::PlayerWin(amount) => amount,
+            Outcome::DealerWin(bet) => -bet,
+            Outcome::Push => 0.0,
+        };
     }
 
+    println!("Total win/loss: {}", win_loss);
     println!(
         "Hit: {}, Stand: {}, Double: {}, Surrender: {}",
         action_counts[usize::from(Action::Hit)],
@@ -90,11 +146,19 @@ pub fn main() {
     for (state_values, desc) in test_states {
         let state = Tensor::<Candle, 2>::from_data([state_values], &device);
         let q_values = model.forward(state.clone());
+        let q_values = q_values.to_data().to_vec::<f32>().unwrap();
+        let action = q_values
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(ndx, _)| ndx)
+            .unwrap();
 
         println!(
-            "{} → Q-values: {:?}",
+            "{} = {:?} → Q-values: {:?}",
             desc,
-            q_values.to_data().to_vec::<f32>().unwrap()
+            Action::try_from(action).unwrap(),
+            q_values
         );
     }
 }
