@@ -158,7 +158,9 @@ where
         // Collect unterminated hands into a batch tensor
         let states: Vec<Tensor<B, 2>> = unterminated
             .iter()
-            .map(|(_, (game, _))| Model::normalize(game, &self.device))
+            .map(|(_, (game, _))| {
+                Model::normalize(game.player_score(0), game.dealer_upcard(), &self.device)
+            })
             .collect();
 
         let batch_tensor = Tensor::cat(states, 0);

@@ -1,9 +1,10 @@
 [data]
 shoe_size = 1
+truncate = 20
 shoe_count = 100_000_000
 no_blackjack = true
 
 [generate]
 workers = 20
-out_dir = "out/"
-progress = 1     # number of seconds between progress updates, 0 to disable
+out_dir = "out/half-shoe"
+progress = 1              # number of seconds between progress updates, 0 to disable

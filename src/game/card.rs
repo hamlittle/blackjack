@@ -3,7 +3,8 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
-#[derive(Debug, PartialEq, Copy, Clone, EnumIter)]
+#[derive(Debug, PartialEq, PartialOrd, Copy, Clone, EnumIter)]
+#[repr(usize)]
 pub enum Rank {
     Two,
     Three,

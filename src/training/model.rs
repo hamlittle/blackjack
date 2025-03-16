@@ -5,7 +5,7 @@ use burn::{
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use strum::{EnumIter, IntoEnumIterator};
 
-use crate::game::game::{Game, Score};
+use crate::game::{card::Card, game::Score};
 
 #[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, PartialEq, Debug)]
 #[repr(usize)]
@@ -13,8 +13,9 @@ pub enum Action {
     Hit,
     Stand,
     Double,
-    // Split,
     Surrender,
+    /// Model does not evaluate splits
+    Split,
 }
 
 #[derive(IntoPrimitive, EnumIter)]
@@ -38,7 +39,7 @@ pub struct ModelConfig {
 pub struct Model<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
-    fc3: Linear<B>,
+    // fc3: Linear<B>,
     activation: LeakyRelu,
     advantage: Linear<B>,
     value: Linear<B>,
@@ -54,7 +55,7 @@ impl<B: Backend> Model<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         let fc1 = LinearConfig::new(Model::<B>::input_size(), config.hidden_size).init(device);
         let fc2 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
-        let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
+        // let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
         let activation = LeakyReluConfig::new()
             .with_negative_slope(config.activation_slope)
             .init();
@@ -65,7 +66,7 @@ impl<B: Backend> Model<B> {
         Self {
             fc1,
             fc2,
-            fc3,
+            // fc3,
             activation,
             advantage,
             value,
@@ -77,23 +78,24 @@ impl<B: Backend> Model<B> {
     }
 
     pub fn output_size() -> usize {
-        Action::iter().len()
+        // Model does not evaluate splits
+        Action::iter().len() - 1
     }
 
-    pub fn normalize(game: &Game, device: &B::Device) -> Tensor<B, 2> {
+    pub fn normalize(player_score: Score, dealer_upcard: Card, device: &B::Device) -> Tensor<B, 2> {
         let data: Vec<B::FloatElem> = Input::iter()
             .map(|input| match input {
-                Input::PlayerScore => game.player_score(0).value() as f32 / 21.0,
-                Input::IsSoft => match game.player_score(0) {
+                Input::PlayerScore => player_score.value() as f32 / 21.0,
+                Input::IsSoft => match player_score {
                     Score::Soft(_) => true as u8 as f32,
                     Score::Hard(_) => false as u8 as f32,
                 },
-                Input::DealerUpCard => game.dealer_upcard().rank.value() as f32 / 11.0 as f32,
+                Input::DealerUpCard => dealer_upcard.rank.value() as f32 / 11.0 as f32,
             })
             .map(|elem| B::FloatElem::from_elem(elem))
             .collect();
 
-        let data = TensorData::new(data, [1, Model::<B>::input_size()]);
+        let data = TensorData::new(data, [1, Self::input_size()]);
 
         Tensor::from_data(data, device)
     }
@@ -103,8 +105,8 @@ impl<B: Backend> Model<B> {
         let x = self.activation.forward(x);
         let x = self.fc2.forward(x);
         let x = self.activation.forward(x);
-        let x = self.fc3.forward(x);
-        let x = self.activation.forward(x);
+        // let x = self.fc3.forward(x);
+        // let x = self.activation.forward(x);
         let advantage = self.advantage.forward(x.clone());
         let value = self.value.forward(x);
 

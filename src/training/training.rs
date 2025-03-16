@@ -106,35 +106,10 @@ impl Trainer {
 
         // B::seed(self.config.seed);
 
-        info!("Loading datasets...");
-        let mut start = Instant::now();
+        // info!("Loading datasets...");
 
-        let dataset = (
-            GameDataset::new(&self.config.train.0, self.config.train.1),
-            GameDataset::new(&self.config.valid.0, self.config.valid.1),
-        );
-
-        let batcher = (
-            GameBatcher::<B>::new(device.clone()),
-            GameBatcher::<B>::new(device.clone()),
-        );
-
-        let loader = (
-            DataLoaderBuilder::new(batcher.0)
-                .batch_size(self.config.batch_size)
-                .shuffle(self.config.seed)
-                .num_workers(self.config.num_workers)
-                .build(dataset.0),
-            DataLoaderBuilder::new(batcher.1)
-                .batch_size(self.config.batch_size)
-                .shuffle(self.config.seed)
-                .num_workers(self.config.num_workers)
-                .build(dataset.1),
-        );
-
-        info!("OK! Loaded datasets ({:?}).", start.elapsed());
-        info!("Setting up training framework...");
-        start = Instant::now();
+        // info!("OK! Loaded datasets.");
+        // info!("Setting up training framework...");
 
         let mut learner = Learner::new(
             self.config.model.init::<B>(&device),
@@ -142,14 +117,36 @@ impl Trainer {
             device.clone(),
         );
 
-        info!("OK! set up training framework ({:?}).", start.elapsed());
+        info!("OK! set up training framework.");
         info!("Start training...");
-        start = Instant::now();
 
         let interuptor = TrainingInterrupter::new();
         let mut renderer = TuiMetricsRenderer::new(interuptor, None);
 
         for epoch in 0..self.config.num_epochs {
+            let dataset = (
+                GameDataset::new(&self.config.train.0, self.config.train.1),
+                GameDataset::new(&self.config.valid.0, self.config.valid.1),
+            );
+
+            let batcher = (
+                GameBatcher::<B>::new(device.clone()),
+                GameBatcher::<B>::new(device.clone()),
+            );
+
+            let loader = (
+                DataLoaderBuilder::new(batcher.0)
+                    .batch_size(self.config.batch_size)
+                    .shuffle(self.config.seed)
+                    .num_workers(self.config.num_workers)
+                    .build(dataset.0),
+                DataLoaderBuilder::new(batcher.1)
+                    .batch_size(self.config.batch_size)
+                    .shuffle(self.config.seed)
+                    .num_workers(self.config.num_workers)
+                    .build(dataset.1),
+            );
+
             let mut loss_metric = (LossMetric::new(), LossMetric::new());
             let mut iteration_metric = (IterationSpeedMetric::new(), IterationSpeedMetric::new());
             let mut batch_metric = (NumericMetricState::new(), NumericMetricState::new());
@@ -160,9 +157,8 @@ impl Trainer {
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
 
+            let mut start = Instant::now();
             while let Some(batch) = batch_iter.next() {
-                let start = Instant::now();
-
                 let weights = self.weights(epoch, iteration);
                 let regression = learner.train_step(&batch, &weights);
                 learner = learner.optim(&regression, &weights, iteration);
@@ -226,14 +222,14 @@ impl Trainer {
                 });
 
                 iteration += 1;
+                start = Instant::now();
             }
 
             let mut batch_iter = loader.1.iter();
             let mut iteration = 0;
 
+            let mut start = Instant::now();
             while let Some(batch) = batch_iter.next() {
-                let start = Instant::now();
-
                 let weights = self.weights(epoch, iteration);
                 let regression = learner.valid_step(&batch, &weights);
 
@@ -272,6 +268,7 @@ impl Trainer {
                 });
 
                 iteration += 1;
+                start = Instant::now();
             }
 
             let model_trained = learner.model();
@@ -281,10 +278,9 @@ impl Trainer {
                     &CompactRecorder::new(),
                 )
                 .expect("Failed to save trained model");
-
-            info!("OK! Finished epoch ({:?})...", start.elapsed());
-            start = Instant::now();
         }
+
+        info!("OK training completed.");
 
         let model_trained = learner.model();
         model_trained
@@ -293,6 +289,8 @@ impl Trainer {
                 &CompactRecorder::new(),
             )
             .expect("Failed to save trained model");
+
+        info!("Saved model to {}.", self.config.artifact_dir);
 
         // let learner = LearnerBuilder::new(artifact_dir)
         //     .metric_train_numeric(LossMetric::new())

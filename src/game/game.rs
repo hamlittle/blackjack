@@ -49,6 +49,25 @@ impl Game {
         }
     }
 
+    pub fn new_exact(shoe: Shoe, dealer_hand: Vec<Card>, players: Vec<(f32, Vec<Card>)>) -> Self {
+        let players: Vec<_> = players
+            .into_iter()
+            .map(|(bet, cards)| {
+                let mut player = Player::new(bet);
+                player.hand = cards;
+
+                player
+            })
+            .collect();
+
+        Self {
+            shoe,
+            dealer_hand,
+            players,
+            status: GameStatus::PlaceBets,
+        }
+    }
+
     pub fn add_player(&mut self, bet: f32) -> usize {
         if self.status != GameStatus::PlaceBets {
             panic!("Cannot add player after game has started.");
@@ -64,10 +83,15 @@ impl Game {
             panic!("Game has already started.");
         }
 
-        self.dealer_hand.extend(self.shoe.two().unwrap());
-        self.players
-            .iter_mut()
-            .for_each(|player| player.hand.extend(self.shoe.two().unwrap()));
+        while self.dealer_hand.len() < 2 {
+            self.dealer_hand.push(self.shoe.one().unwrap());
+        }
+
+        for player in &mut self.players {
+            while player.hand.len() < 2 {
+                player.hand.push(self.shoe.one().unwrap());
+            }
+        }
 
         if score(&self.dealer_hand).blackjack() {
             self.players.iter_mut().for_each(|player| {
@@ -152,6 +176,14 @@ impl Game {
         self.players[player].hand.clone()
     }
 
+    pub fn dealer_hand(&self) -> Vec<Card> {
+        self.dealer_hand.clone()
+    }
+
+    pub fn player_bet(&self, player: usize) -> f32 {
+        self.players[player].bet
+    }
+
     pub fn player_score(&self, player: usize) -> Score {
         score(&self.players[player].hand)
     }
@@ -162,6 +194,10 @@ impl Game {
 
     pub fn dealer_upcard(&self) -> Card {
         self.dealer_hand[0]
+    }
+
+    pub fn shoe(&self) -> Shoe {
+        self.shoe.clone()
     }
 }
 

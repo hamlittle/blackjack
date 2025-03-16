@@ -47,6 +47,10 @@ impl Shoe {
         self.n_dealt = 0;
     }
 
+    pub fn truncate(&mut self, count: usize) {
+        self.cards.truncate(count);
+    }
+
     pub fn one(&mut self) -> Option<Card> {
         let card = self.cards.get(self.n_dealt)?;
         self.n_dealt += 1;
@@ -56,5 +60,9 @@ impl Shoe {
 
     pub fn two(&mut self) -> Option<[Card; 2]> {
         Some([self.one()?, self.one()?])
+    }
+
+    pub fn reset(&mut self) {
+        self.n_dealt = 0;
     }
 }

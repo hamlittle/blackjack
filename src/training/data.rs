@@ -12,12 +12,12 @@ use std::{
 };
 
 use crate::{
-    game::{game::Game, shoe::Shoe},
+    game::{card::Card, game::Game, shoe::Shoe},
     training::model::Model,
 };
 
 pub struct GameDataset {
-    games: Vec<Game>,
+    // games: Vec<Game>,
     /// loops if size is more than number of games
     size: usize,
 }
@@ -26,39 +26,58 @@ impl GameDataset {
     pub fn new(source: &Path, size: usize) -> Self {
         let start = Instant::now();
 
-        let reader = BufReader::new(File::open(source).unwrap());
-        let games: Vec<_> = reader
-            .lines()
-            .par_bridge()
-            .map(|line| {
-                let shoe: Shoe = serde_json::from_str(&line.unwrap()).unwrap();
-                // rmp_serde::from_slice(line.unwrap().as_bytes()).unwrap();
-                let mut game = Game::new(shoe);
-                game.add_player(1.0);
-                game.start();
+        // let reader = BufReader::new(File::open(source).unwrap());
+        // let games: Vec<_> = reader
+        //     .lines()
+        //     .par_bridge()
+        //     .map(|line| {
+        //         let shoe: Shoe = serde_json::from_str(&line.unwrap()).unwrap();
+        //         let mut game = Game::new(shoe);
+        //         game.add_player(1.0);
+        //         game.start();
 
-                game
-            })
-            .collect();
+        //         game
+        //     })
+        //     .collect();
 
-        let duration = start.elapsed();
-        info!(
-            "OK! Read {} shoes from '{:?}' ({:.3?})",
-            games.len(),
-            source,
-            duration
-        );
+        // let duration = start.elapsed();
+        // info!(
+        //     "OK! Read {} shoes from '{:?}' ({:.3?})",
+        //     games.len(),
+        //     source,
+        //     duration
+        // );
 
-        Self { size, games }
+        // Self { size, games }
+        Self { size }
     }
+}
+
+fn blackjack(cards: [Card; 2]) -> bool {
+    cards[0].rank.value() + cards[1].rank.value() == 21
 }
 
 impl Dataset<Game> for GameDataset {
     fn get(&self, ndx: usize) -> Option<Game> {
-        // loop if ndx is more than number of games stored
-        let ndx = ndx % self.games.len();
+        // // loop if ndx is more than number of games stored
+        // let ndx = ndx % self.games.len();
 
-        Some(self.games[ndx].clone())
+        // Some(self.games[ndx].clone())
+
+        let mut shoe = Shoe::new(1);
+        shoe.shuffle(&mut rand::rng());
+        shoe.truncate(20);
+
+        while blackjack(shoe.two().unwrap()) || blackjack(shoe.two().unwrap()) {
+            shoe.shuffle(&mut rand::rng());
+        }
+        shoe.reset();
+
+        let mut game = Game::new(shoe);
+        game.add_player(1.0);
+        game.start();
+
+        Some(game)
     }
 
     fn len(&self) -> usize {
@@ -87,8 +106,7 @@ impl<B: Backend> Batcher<Game, GameBatch<B>> for GameBatcher<B> {
     fn batch(&self, items: Vec<Game>) -> GameBatch<B> {
         let input: Vec<_> = items
             .par_iter()
-            // .iter()
-            .map(|game| Model::normalize(game, &self.device))
+            .map(|game| Model::normalize(game.player_score(0), game.dealer_upcard(), &self.device))
             .collect();
         let input = Tensor::cat(input, 0);
 

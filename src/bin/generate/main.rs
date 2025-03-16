@@ -64,6 +64,7 @@ fn main() {
 
                 (0..count).for_each(|_| {
                     let mut shoe = Shoe::new(shoe_size);
+                    shoe.truncate(config.data.truncate);
                     shoe.shuffle(&mut rng);
 
                     if config.data.no_blackjack {
