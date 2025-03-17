@@ -21,11 +21,11 @@ fn main() {
         optimizer,
         (
             PathBuf::from("out/half-shoe/shoes.1-100000000.ndjson"),
-            10_000_000,
+            100_000_000,
         ),
         (
             PathBuf::from("out/half-shoe/shoes.1-1000000.ndjson"),
-            5_000_000,
+            20_000_000,
         ),
         weights::WEIGHTS.into(),
     )
