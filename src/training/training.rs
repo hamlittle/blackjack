@@ -1,16 +1,23 @@
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::mpsc,
+    thread::{self, sleep},
+    time::{Duration, Instant},
+};
 
 use burn::{
     config::Config,
     data::dataloader::DataLoaderBuilder,
     module::Module,
     optim::AdamConfig,
+    prelude::Backend,
     record::CompactRecorder,
     tensor::backend::AutodiffBackend,
     train::{
-        TrainingInterrupter,
+        RegressionOutput, TrainingInterrupter,
         metric::{
-            IterationSpeedMetric, LossInput, LossMetric, Metric, MetricMetadata, Numeric,
+            IterationSpeedMetric, LossInput, LossMetric, Metric, MetricEntry, MetricMetadata,
+            Numeric,
             state::{FormatOptions, NumericMetricState},
         },
         renderer::{MetricState, MetricsRenderer, TrainingProgress, tui::TuiMetricsRenderer},
@@ -79,6 +86,85 @@ pub struct TrainingConfig {
     pub num_workers: usize,
 }
 
+struct Metrics<B: Backend> {
+    pub loss: LossMetric<B>,
+    pub iteration: IterationSpeedMetric,
+    pub batch: NumericMetricState,
+    pub exploration: NumericMetricState,
+    pub discont: NumericMetricState,
+    pub learning_rate: NumericMetricState,
+    pub updates: Vec<MetricEntry>,
+}
+
+impl<B: Backend> Metrics<B> {
+    pub fn new() -> Self {
+        Self {
+            loss: LossMetric::new(),
+            iteration: IterationSpeedMetric::new(),
+            batch: NumericMetricState::new(),
+            exploration: NumericMetricState::new(),
+            discont: NumericMetricState::new(),
+            learning_rate: NumericMetricState::new(),
+            updates: Vec::new(),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        metadata: &MetricMetadata,
+        elapsed: Duration,
+        config: &TrainingConfig,
+        weights: &Weights,
+        regression: &RegressionOutput<B>,
+    ) -> Vec<(MetricEntry, f64)> {
+        let mut updates = Vec::new();
+
+        updates.push((
+            self.loss
+                .update(&LossInput::<B>::new(regression.loss.clone()), &metadata),
+            self.loss.value(),
+        ));
+        updates.push((
+            self.iteration.update(&(), &metadata),
+            self.iteration.value(),
+        ));
+        updates.push((
+            self.batch.update(
+                config.batch_size as f64 / elapsed.as_secs_f64(),
+                config.batch_size,
+                FormatOptions::new("batch").unit("item/second").precision(0),
+            ),
+            self.batch.value(),
+        ));
+        updates.push((
+            self.exploration.update(
+                weights.eps as f64,
+                config.batch_size,
+                FormatOptions::new("exploration").precision(2),
+            ),
+            self.exploration.value(),
+        ));
+        updates.push((
+            self.discont.update(
+                weights.gamma as f64,
+                config.batch_size,
+                FormatOptions::new("discount").precision(2),
+            ),
+            self.discont.value(),
+        ));
+        updates.push((
+            self.learning_rate.update(
+                weights.learning_rate as f64,
+                config.batch_size,
+                FormatOptions::new("learning rate").precision(2),
+            ),
+            self.discont.value(),
+        ));
+
+        updates
+    }
+}
+
 impl TrainingConfig {
     pub fn init(&self) -> Trainer {
         Trainer::new(self)
@@ -100,16 +186,79 @@ impl Trainer {
         std::fs::remove_dir_all(&self.config.artifact_dir).ok();
         std::fs::create_dir_all(&self.config.artifact_dir).ok();
 
+        let interuptor = TrainingInterrupter::new();
+        let mut renderer = TuiMetricsRenderer::new(interuptor, None);
+
+        let (tx, rx) = mpsc::channel();
+        let render_thread = thread::spawn(move || {
+            rx.iter().for_each(
+                |(ndx, metadata, updates): (usize, MetricMetadata, Vec<(MetricEntry, f64)>)| {
+                    match ndx {
+                        0 => {
+                            for update in updates {
+                                renderer.update_train(MetricState::Numeric(update.0, update.1));
+                            }
+
+                            renderer.render_train(TrainingProgress {
+                                progress: metadata.progress,
+                                epoch: metadata.epoch,
+                                epoch_total: metadata.epoch_total,
+                                iteration: metadata.iteration,
+                            });
+                        }
+                        1 => {
+                            for update in updates {
+                                renderer.update_valid(MetricState::Numeric(update.0, update.1));
+                            }
+
+                            renderer.render_valid(TrainingProgress {
+                                progress: metadata.progress,
+                                epoch: metadata.epoch,
+                                epoch_total: metadata.epoch_total,
+                                iteration: metadata.iteration,
+                            });
+                        }
+                        _ => panic!("Invalid ndx."),
+                    }
+                },
+            );
+
+            renderer.persistent();
+        });
+
         self.config
             .save(format!("{}/config.json", self.config.artifact_dir))
             .expect("Config should be saved successfully");
 
         // B::seed(self.config.seed);
 
-        // info!("Loading datasets...");
+        info!("Loading datasets...");
 
-        // info!("OK! Loaded datasets.");
-        // info!("Setting up training framework...");
+        let dataset = (
+            GameDataset::new(&self.config.train.0, self.config.train.1),
+            GameDataset::new(&self.config.valid.0, self.config.valid.1),
+        );
+
+        let batcher = (
+            GameBatcher::<B>::new(device.clone()),
+            GameBatcher::<B>::new(device.clone()),
+        );
+
+        let loader = (
+            DataLoaderBuilder::new(batcher.0)
+                .batch_size(self.config.batch_size)
+                .shuffle(self.config.seed)
+                .num_workers(self.config.num_workers)
+                .build(dataset.0),
+            DataLoaderBuilder::new(batcher.1)
+                .batch_size(self.config.batch_size)
+                .shuffle(self.config.seed)
+                .num_workers(self.config.num_workers)
+                .build(dataset.1),
+        );
+
+        info!("OK! Loaded datasets.");
+        info!("Setting up training framework...");
 
         let mut learner = Learner::new(
             self.config.model.init::<B>(&device),
@@ -117,43 +266,12 @@ impl Trainer {
             device.clone(),
         );
 
+        let mut metrics = (Metrics::<B>::new(), Metrics::<B>::new());
+
         info!("OK! set up training framework.");
         info!("Start training...");
 
-        let interuptor = TrainingInterrupter::new();
-        let mut renderer = TuiMetricsRenderer::new(interuptor, None);
-
         for epoch in 0..self.config.num_epochs {
-            let dataset = (
-                GameDataset::new(&self.config.train.0, self.config.train.1),
-                GameDataset::new(&self.config.valid.0, self.config.valid.1),
-            );
-
-            let batcher = (
-                GameBatcher::<B>::new(device.clone()),
-                GameBatcher::<B>::new(device.clone()),
-            );
-
-            let loader = (
-                DataLoaderBuilder::new(batcher.0)
-                    .batch_size(self.config.batch_size)
-                    .shuffle(self.config.seed)
-                    .num_workers(self.config.num_workers)
-                    .build(dataset.0),
-                DataLoaderBuilder::new(batcher.1)
-                    .batch_size(self.config.batch_size)
-                    .shuffle(self.config.seed)
-                    .num_workers(self.config.num_workers)
-                    .build(dataset.1),
-            );
-
-            let mut loss_metric = (LossMetric::new(), LossMetric::new());
-            let mut iteration_metric = (IterationSpeedMetric::new(), IterationSpeedMetric::new());
-            let mut batch_metric = (NumericMetricState::new(), NumericMetricState::new());
-            let mut exploration_metric = NumericMetricState::new();
-            let mut discount_metric = NumericMetricState::new();
-            let mut learning_metric = NumericMetricState::new();
-
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
 
@@ -163,8 +281,6 @@ impl Trainer {
                 let regression = learner.train_step(&batch, &weights);
                 learner = learner.optim(&regression, &weights, iteration);
 
-                let elapsed = start.elapsed();
-
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
                     epoch: epoch + 1,
@@ -172,54 +288,15 @@ impl Trainer {
                     iteration: iteration + 1,
                     lr: Some(weights.learning_rate),
                 };
-                renderer.update_train(MetricState::Numeric(
-                    loss_metric
-                        .0
-                        .update(&LossInput::<B>::new(regression.loss), &metadata),
-                    loss_metric.0.value(),
-                ));
-                renderer.update_train(MetricState::Numeric(
-                    iteration_metric.0.update(&(), &metadata),
-                    iteration_metric.0.value(),
-                ));
-                renderer.update_train(MetricState::Numeric(
-                    batch_metric.0.update(
-                        self.config.batch_size as f64 / elapsed.as_secs_f64(),
-                        self.config.batch_size,
-                        FormatOptions::new("batch").unit("item/second").precision(0),
-                    ),
-                    self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
-                ));
-                renderer.update_train(MetricState::Numeric(
-                    exploration_metric.update(
-                        weights.eps as f64,
-                        self.config.batch_size,
-                        FormatOptions::new("exploration").precision(2),
-                    ),
-                    weights.eps as f64,
-                ));
-                renderer.update_train(MetricState::Numeric(
-                    discount_metric.update(
-                        weights.gamma as f64,
-                        self.config.batch_size,
-                        FormatOptions::new("discount").precision(2),
-                    ),
-                    weights.gamma as f64,
-                ));
-                renderer.update_train(MetricState::Numeric(
-                    learning_metric.update(
-                        weights.learning_rate as f64,
-                        self.config.batch_size,
-                        FormatOptions::new("learning rate").precision(2),
-                    ),
-                    weights.learning_rate as f64,
-                ));
-                renderer.render_train(TrainingProgress {
-                    progress: batch_iter.progress(),
-                    epoch: epoch + 1,
-                    epoch_total: self.config.num_epochs,
-                    iteration: iteration + 1,
-                });
+                let updates = metrics.0.update(
+                    &metadata,
+                    start.elapsed(),
+                    &self.config,
+                    &weights,
+                    &regression,
+                );
+
+                let _ = tx.send((0, metadata, updates));
 
                 iteration += 1;
                 start = Instant::now();
@@ -233,39 +310,22 @@ impl Trainer {
                 let weights = self.weights(epoch, iteration);
                 let regression = learner.valid_step(&batch, &weights);
 
-                let elapsed = start.elapsed();
-
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
-                    epoch: epoch,
+                    epoch: epoch + 1,
                     epoch_total: self.config.num_epochs,
-                    iteration,
+                    iteration: iteration + 1,
                     lr: Some(weights.learning_rate),
                 };
-                renderer.update_valid(MetricState::Numeric(
-                    loss_metric
-                        .1
-                        .update(&LossInput::<B>::new(regression.loss), &metadata),
-                    loss_metric.1.value(),
-                ));
-                renderer.update_valid(MetricState::Numeric(
-                    iteration_metric.1.update(&(), &metadata),
-                    iteration_metric.1.value(),
-                ));
-                renderer.update_valid(MetricState::Numeric(
-                    batch_metric.1.update(
-                        self.config.batch_size as f64 / elapsed.as_secs_f64(),
-                        self.config.batch_size,
-                        FormatOptions::new("batch").unit("item/second").precision(2),
-                    ),
-                    self.config.batch_size as f64 / elapsed.as_secs_f64() as f64,
-                ));
-                renderer.render_valid(TrainingProgress {
-                    progress: batch_iter.progress(),
-                    epoch,
-                    epoch_total: self.config.num_epochs,
-                    iteration,
-                });
+                let updates = metrics.1.update(
+                    &metadata,
+                    start.elapsed(),
+                    &self.config,
+                    &weights,
+                    &regression,
+                );
+
+                let _ = tx.send((1, metadata, updates));
 
                 iteration += 1;
                 start = Instant::now();
@@ -292,20 +352,8 @@ impl Trainer {
 
         info!("Saved model to {}.", self.config.artifact_dir);
 
-        // let learner = LearnerBuilder::new(artifact_dir)
-        //     .metric_train_numeric(LossMetric::new())
-        //     .metric_valid_numeric(LossMetric::new())
-        //     .with_file_checkpointer(CompactRecorder::new())
-        //     .devices(vec![device.clone()])
-        //     .num_epochs(config.num_epochs)
-        //     .summary()
-        //     .build(
-        //         config.model.init::<B>(&device),
-        //         config.optimizer.init(),
-        //         config.learning_rate,
-        //     );
-
-        // let model_trained = learner.fit(dataloader_train, dataloader_test);
+        drop(tx);
+        let _ = render_thread.join();
     }
 
     fn weights(&self, epoch: usize, iteration: usize) -> Weights {
@@ -324,6 +372,4 @@ impl Trainer {
             target_update: config.target_update,
         }
     }
-
-    // fn forward_step(&self, model: &Model::<B>, )
 }

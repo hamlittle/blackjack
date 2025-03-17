@@ -232,7 +232,7 @@ pub fn main() {
         action_counts[usize::from(Action::Split)]
     );
     println!(
-        "Hards: {} / {} -> {} %",
+        "Hards: {} / {} -> {:.1} %",
         hards.0,
         hards.0 + hards.1,
         hards.2 * 100.0
@@ -267,7 +267,7 @@ fn evaluate_accuracy(
             }
 
             println!(
-                "{} | {} {:?} vs {}: Should {:?}, Chose {:?} -> Q-values: {}",
+                "{} {} | {:?} vs {}: Should {:?}, Chose {:?} -> Q-values: {}",
                 if chose_action == *correct_action {
                     "\u{2705}"
                 } else {

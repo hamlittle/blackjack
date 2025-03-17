@@ -1,5 +1,5 @@
 use burn::{
-    nn::{LeakyRelu, LeakyReluConfig, Linear, LinearConfig},
+    nn::{LeakyRelu, LeakyReluConfig, Linear, LinearConfig, Relu},
     prelude::*,
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -39,8 +39,8 @@ pub struct ModelConfig {
 pub struct Model<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
-    // fc3: Linear<B>,
-    activation: LeakyRelu,
+    fc3: Linear<B>,
+    activation: Relu,
     advantage: Linear<B>,
     value: Linear<B>,
 }
@@ -55,10 +55,11 @@ impl<B: Backend> Model<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         let fc1 = LinearConfig::new(Model::<B>::input_size(), config.hidden_size).init(device);
         let fc2 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
-        // let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
-        let activation = LeakyReluConfig::new()
-            .with_negative_slope(config.activation_slope)
-            .init();
+        let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
+        // let activation = LeakyReluConfig::new()
+        //     .with_negative_slope(config.activation_slope)
+        //     .init();
+        let activation = Relu::new();
         let advantage =
             LinearConfig::new(config.hidden_size, Model::<B>::output_size()).init(device);
         let value = LinearConfig::new(config.hidden_size, 1).init(device);
@@ -66,7 +67,7 @@ impl<B: Backend> Model<B> {
         Self {
             fc1,
             fc2,
-            // fc3,
+            fc3,
             activation,
             advantage,
             value,
@@ -105,8 +106,8 @@ impl<B: Backend> Model<B> {
         let x = self.activation.forward(x);
         let x = self.fc2.forward(x);
         let x = self.activation.forward(x);
-        // let x = self.fc3.forward(x);
-        // let x = self.activation.forward(x);
+        let x = self.fc3.forward(x);
+        let x = self.activation.forward(x);
         let advantage = self.advantage.forward(x.clone());
         let value = self.value.forward(x);
 
