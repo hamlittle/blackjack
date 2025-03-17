@@ -158,7 +158,7 @@ impl<B: Backend> Metrics<B> {
                 config.batch_size,
                 FormatOptions::new("learning rate").precision(2),
             ),
-            self.discont.value(),
+            self.learning_rate.value(),
         ));
 
         updates
@@ -266,12 +266,12 @@ impl Trainer {
             device.clone(),
         );
 
-        let mut metrics = (Metrics::<B>::new(), Metrics::<B>::new());
-
         info!("OK! set up training framework.");
         info!("Start training...");
 
         for epoch in 0..self.config.num_epochs {
+            let mut metrics = (Metrics::<B>::new(), Metrics::<B>::new());
+
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
 

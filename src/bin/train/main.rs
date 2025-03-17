@@ -21,15 +21,15 @@ fn main() {
         optimizer,
         (
             PathBuf::from("out/half-shoe/shoes.1-100000000.ndjson"),
-            100_000_000,
+            1_000_000,
         ),
         (
             PathBuf::from("out/half-shoe/shoes.1-1000000.ndjson"),
-            20_000_000,
+            500_000,
         ),
         weights::WEIGHTS.into(),
     )
-    .with_batch_size(1024)
+    .with_batch_size(128)
     .with_num_epochs(WEIGHTS.len())
     .with_num_workers(2);
 

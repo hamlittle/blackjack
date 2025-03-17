@@ -40,7 +40,8 @@ pub struct Model<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
     fc3: Linear<B>,
-    activation: Relu,
+    // activation: Relu,
+    activation: LeakyRelu,
     advantage: Linear<B>,
     value: Linear<B>,
 }
@@ -56,10 +57,10 @@ impl<B: Backend> Model<B> {
         let fc1 = LinearConfig::new(Model::<B>::input_size(), config.hidden_size).init(device);
         let fc2 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
         let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
-        // let activation = LeakyReluConfig::new()
-        //     .with_negative_slope(config.activation_slope)
-        //     .init();
-        let activation = Relu::new();
+        let activation = LeakyReluConfig::new()
+            .with_negative_slope(config.activation_slope)
+            .init();
+        // let activation = Relu::new();
         let advantage =
             LinearConfig::new(config.hidden_size, Model::<B>::output_size()).init(device);
         let value = LinearConfig::new(config.hidden_size, 1).init(device);
