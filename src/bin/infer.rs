@@ -24,21 +24,46 @@ use strum::IntoEnumIterator;
 pub fn expected_value(
     player_score: Score,
     dealer_upcard: Card,
+    filter: Option<&[Action]>,
     model: &Model<Candle>,
     device: &CandleDevice,
 ) -> f32 {
     let state = Model::<Candle>::normalize(player_score, dealer_upcard, &device);
     let output = model.forward(state);
-    output.max_dim(1).into_scalar().to_f32()
+
+    let filter: Vec<usize> = match filter {
+        Some(filter) => filter.iter().map(|action| usize::from(*action)).collect(),
+        None => (0..Model::<Candle>::output_size()).collect(),
+    };
+    let filter = Tensor::<Candle, 1, Int>::from_data(filter.as_slice(), &device);
+
+    output.select(1, filter).max_dim(1).into_scalar().to_f32()
 }
 
 pub fn best_action(
     player_score: Score,
     dealer_upcard: Card,
     first_play: bool,
+    can_split: bool,
     model: &Model<Candle>,
     device: &CandleDevice,
 ) -> Action {
+    if first_play && can_split {
+        let ev = expected_value(player_score, dealer_upcard, None, model, device);
+
+        let split_ev = expected_value(
+            Score::Hard(player_score.value() / 2),
+            dealer_upcard,
+            Some(&[Action::Hit, Action::Stand]),
+            model,
+            device,
+        ) * 2.0;
+
+        if split_ev > ev {
+            return Action::Split;
+        }
+    }
+
     let state = Model::<Candle>::normalize(player_score, dealer_upcard, &device);
     let output = model.forward(state);
 
@@ -56,111 +81,109 @@ pub fn best_action(
     Action::try_from(best_action).unwrap()
 }
 
-pub fn evaluate(
+pub fn evaluate_gameplay(
     game: &mut Game,
     player: usize,
     terminal: bool,
+    is_split: bool,
     model: &Model<Candle>,
     device: &CandleDevice,
-) -> (f32, Vec<Action>) {
-    let ev = expected_value(
-        game.player_score(player),
+) -> (f32, Action) {
+    let player_hand = game.player_hand(0);
+    let first_action = best_action(
+        game.player_score(0),
         game.dealer_upcard(),
+        true,
+        player_hand[0].rank == player_hand[1].rank,
         model,
         device,
     );
 
-    // evaluate for hand split
-    let player_hand = game.player_hand(0);
-    if player_hand[0] == player_hand[1] {
-        let split_ev = expected_value(
-            Score::Hard(player_hand[0].rank.value()),
-            game.dealer_upcard(),
-            model,
-            device,
-        );
+    if first_action == Action::Split {
+        let split_player = game.player_split(player);
+        let _ = evaluate_gameplay(game, player, false, true, model, device);
+        let _ = evaluate_gameplay(game, split_player, false, true, model, device);
 
-        // take the split
-        if split_ev > ev {
-            let split_player = game.player_split(player);
+        let mut win_loss = 0.0;
+        if !is_split {
+            game.end();
 
-            let first_hand = evaluate(game, player, false, model, device);
-            let second_hand = evaluate(game, split_player, true, model, device);
-
-            let total_win_loss = first_hand.0 + second_hand.0;
-
-            let mut actions = vec![Action::Split];
-            actions.extend(first_hand.1);
-            actions.extend(second_hand.1);
-
-            return (total_win_loss, actions);
+            win_loss = (0..game.player_count())
+                .map(|player| match game.player_outcome(player).unwrap() {
+                    Outcome::PlayerWin(amount) => amount,
+                    Outcome::DealerWin(bet) => -bet,
+                    Outcome::Push => 0.0,
+                })
+                .sum();
         }
-    }
 
-    // play the game normally
-    let mut actions = Vec::new();
-    loop {
-        let action = best_action(
-            game.player_score(0),
-            game.dealer_upcard(),
-            actions.len() == 0,
-            model,
-            device,
-        );
+        return (win_loss, Action::Split);
+    } else {
+        let mut action = first_action;
 
-        actions.push(action);
-
-        match Action::try_from(action).unwrap() {
-            Action::Hit => {
-                game.player_hit(0);
-
-                if game.player_outcome(0).is_some() {
+        while game.player_outcome(player).is_none() {
+            match action {
+                Action::Hit => {
+                    game.player_hit(player);
+                }
+                Action::Stand => {
+                    game.player_stand(player);
                     break;
                 }
+                Action::Double => {
+                    game.player_double(player);
+                    break;
+                }
+                Action::Surrender => {
+                    game.player_surrender(player);
+                    break;
+                }
+                Action::Split => panic!("ERR! Model does not evaluate splits."),
             }
-            Action::Stand => {
-                game.player_stand(0);
-                break;
-            }
-            Action::Double => {
-                game.player_double(0);
-                break;
-            }
-            Action::Surrender => {
-                game.player_surrender(0);
-                break;
-            }
-            Action::Split => panic!("ERR! Model does not evaluate splits."),
+
+            action = best_action(
+                game.player_score(player),
+                game.dealer_upcard(),
+                false,
+                false,
+                model,
+                device,
+            );
         }
     }
 
+    let mut win_loss = 0.0;
     if terminal {
         game.end();
+
+        win_loss = match game.player_outcome(player).unwrap() {
+            Outcome::PlayerWin(amount) => amount,
+            Outcome::DealerWin(bet) => -bet,
+            Outcome::Push => 0.0,
+        };
     }
 
-    let win_loss = match game.player_outcome(0).unwrap() {
-        Outcome::PlayerWin(amount) => amount,
-        Outcome::DealerWin(bet) => -bet,
-        Outcome::Push => 0.0,
-    };
-
-    (win_loss, actions)
+    (win_loss, first_action)
 }
 
 pub fn main() {
     let device = CandleDevice::default();
 
-    let config = TrainingConfig::load(format!("/tmp/training/config.json"))
+    let dir = "training/best";
+    // let dir = "/tmp/training";
+    let model = "model";
+    let rounds = 8390;
+
+    let config = TrainingConfig::load(format!("{dir}/config.json"))
         .expect("Config should exist for the model.");
 
     let record = CompactRecorder::new()
-        .load(format!("/tmp/training/model.mpk").into(), &device)
-        // .load(format!("training/25_000h.10e/model.mpk").into(), &device)
+        .load(format!("{dir}/{model}.mpk").into(), &device)
         .expect("Trained model should exist.");
 
     let model = config.model.init::<Candle>(&device).load_record(record);
 
-    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), 10_000);
+    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), rounds);
     let batcher = GameBatcher::<Candle>::new(device.clone());
     let loader = DataLoaderBuilder::new(batcher)
         .batch_size(1)
@@ -171,17 +194,63 @@ pub fn main() {
     let mut action_counts: Vec<usize> = vec![0; Action::iter().len()];
     for batch in loader.iter() {
         let mut game = batch.games[0].clone();
-        let (win_loss, actions) = evaluate(&mut game, 0, true, &model, &device);
+        let (win_loss, first_action) =
+            evaluate_gameplay(&mut game, 0, true, false, &model, &device);
 
         total_win_loss += win_loss;
-
-        for action in actions {
-            action_counts[usize::from(action)] += 1;
-        }
+        action_counts[usize::from(first_action)] += 1;
     }
 
+    let splits = vec![
+        // (Score::Hard(4), Rank::Two..=Rank::Seven, Action::Split),
+        // (Score::Hard(4), Rank::Eight..=Rank::Ace, Action::Hit),
+        // (Score::Hard(6), Rank::Two..=Rank::Seven, Action::Split),
+        // (Score::Hard(6), Rank::Eight..=Rank::Ace, Action::Hit),
+        (Score::Hard(8), Rank::Two..=Rank::Four, Action::Split),
+        (Score::Hard(8), Rank::Five..=Rank::Six, Action::Split),
+        (Score::Hard(8), Rank::Six..=Rank::Ace, Action::Hit),
+        (Score::Hard(10), Rank::Two..=Rank::Nine, Action::Double),
+        (Score::Hard(10), Rank::Ten..=Rank::Ace, Action::Hit),
+        (Score::Hard(12), Rank::Two..=Rank::Six, Action::Split),
+        (Score::Hard(12), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Hard(14), Rank::Two..=Rank::Seven, Action::Split),
+        (Score::Hard(14), Rank::Eight..=Rank::Ace, Action::Hit),
+        (Score::Hard(16), Rank::Two..=Rank::Ten, Action::Split),
+        (Score::Hard(16), Rank::Ace..=Rank::Ace, Action::Surrender),
+        (Score::Hard(18), Rank::Two..=Rank::Six, Action::Split),
+        (Score::Hard(18), Rank::Seven..=Rank::Seven, Action::Stand),
+        (Score::Hard(18), Rank::Eight..=Rank::Nine, Action::Split),
+        (Score::Hard(18), Rank::Ten..=Rank::Ace, Action::Stand),
+        (Score::Hard(20), Rank::Two..=Rank::Ace, Action::Stand),
+        // (Score::Hard(22), Rank::Two..=Rank::Ace, Action::Split),
+    ];
+
+    let softs = vec![
+        (Score::Soft(13), Rank::Two..=Rank::Four, Action::Hit),
+        (Score::Soft(13), Rank::Five..=Rank::Six, Action::Double),
+        (Score::Soft(13), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Soft(14), Rank::Two..=Rank::Four, Action::Hit),
+        (Score::Soft(14), Rank::Five..=Rank::Six, Action::Double),
+        (Score::Soft(14), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Soft(15), Rank::Two..=Rank::Three, Action::Hit),
+        (Score::Soft(15), Rank::Four..=Rank::Six, Action::Double),
+        (Score::Soft(15), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Soft(16), Rank::Two..=Rank::Three, Action::Hit),
+        (Score::Soft(16), Rank::Four..=Rank::Six, Action::Double),
+        (Score::Soft(16), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Soft(17), Rank::Two..=Rank::Two, Action::Hit),
+        (Score::Soft(17), Rank::Three..=Rank::Six, Action::Double),
+        (Score::Soft(17), Rank::Seven..=Rank::Ace, Action::Hit),
+        (Score::Soft(18), Rank::Two..=Rank::Six, Action::Double),
+        (Score::Soft(18), Rank::Seven..=Rank::Eight, Action::Stand),
+        (Score::Soft(18), Rank::Nine..=Rank::Ace, Action::Hit),
+        (Score::Soft(19), Rank::Two..=Rank::Five, Action::Stand),
+        (Score::Soft(19), Rank::Six..=Rank::Six, Action::Double),
+        (Score::Soft(19), Rank::Seven..=Rank::Ace, Action::Stand),
+        (Score::Soft(20), Rank::Two..=Rank::Ace, Action::Stand),
+    ];
+
     let hards = vec![
-        // Hard hands
         (Score::Hard(4), Rank::Two..=Rank::Ace, Action::Hit),
         (Score::Hard(5), Rank::Two..=Rank::Ace, Action::Hit),
         (Score::Hard(6), Rank::Two..=Rank::Ace, Action::Hit),
@@ -214,7 +283,11 @@ pub fn main() {
     ];
 
     println!("---");
-    let hards = evaluate_accuracy("Hards", &hards, &model, &device);
+    let splits = evaluate_accuracy("Split", &splits, true, &model, &device);
+    println!("---");
+    let softs = evaluate_accuracy("Soft", &softs, false, &model, &device);
+    println!("---");
+    let hards = evaluate_accuracy("Hard", &hards, false, &model, &device);
 
     println!("---");
     println!(
@@ -232,6 +305,18 @@ pub fn main() {
         action_counts[usize::from(Action::Split)]
     );
     println!(
+        "Splits: {} / {} -> {:.1} %",
+        splits.0,
+        splits.0 + splits.1,
+        splits.2 * 100.0
+    );
+    println!(
+        "Softs: {} / {} -> {:.1} %",
+        softs.0,
+        softs.0 + softs.1,
+        softs.2 * 100.0
+    );
+    println!(
         "Hards: {} / {} -> {:.1} %",
         hards.0,
         hards.0 + hards.1,
@@ -242,6 +327,7 @@ pub fn main() {
 fn evaluate_accuracy(
     test_type: &str,
     test_data: &[(Score, RangeInclusive<Rank>, Action)],
+    eval_split: bool,
     model: &Model<Candle>,
     device: &CandleDevice,
 ) -> (u32, u32, f32) {
@@ -258,7 +344,14 @@ fn evaluate_accuracy(
             let state = Model::<Candle>::normalize(*player_score, dealer_upcard, &device);
             let q_values = model.forward(state);
 
-            let chose_action = best_action(*player_score, dealer_upcard, true, &model, &device);
+            let chose_action = best_action(
+                *player_score,
+                dealer_upcard,
+                true,
+                eval_split,
+                &model,
+                &device,
+            );
 
             if chose_action == *correct_action {
                 correct_plays += 1;

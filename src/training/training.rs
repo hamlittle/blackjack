@@ -1,13 +1,13 @@
 use std::{
     path::PathBuf,
     sync::mpsc,
-    thread::{self, sleep},
+    thread,
     time::{Duration, Instant},
 };
 
 use burn::{
     config::Config,
-    data::dataloader::DataLoaderBuilder,
+    data::dataloader::{DataLoaderBuilder, Progress},
     module::Module,
     optim::AdamConfig,
     prelude::Backend,
@@ -43,20 +43,16 @@ pub struct TrainingWeightsConfig {
     pub gamma: f32,
 
     #[config(default = 0.0)]
-    /// set the exploration rate
-    pub eps: f64,
+    /// starting exploration rate (linear decay within an epoch)
+    pub eps_start: f64,
 
     #[config(default = 0.0)]
-    /// set the exploration decay rate (linear decay each for each training batch)
-    pub eps_decay: f64,
-
-    #[config(default = 0.0)]
-    /// exploration rate floor
-    pub eps_min: f64,
+    /// ending exploration rate (linear decay within an epoch)
+    pub eps_end: f64,
 
     #[config(default = 100)]
-    /// exploration rate floor
-    pub target_update: u32,
+    /// number of items between offline network updates
+    pub offline_update: u32,
 }
 
 #[derive(Config)]
@@ -93,7 +89,6 @@ struct Metrics<B: Backend> {
     pub exploration: NumericMetricState,
     pub discont: NumericMetricState,
     pub learning_rate: NumericMetricState,
-    pub updates: Vec<MetricEntry>,
 }
 
 impl<B: Backend> Metrics<B> {
@@ -105,7 +100,6 @@ impl<B: Backend> Metrics<B> {
             exploration: NumericMetricState::new(),
             discont: NumericMetricState::new(),
             learning_rate: NumericMetricState::new(),
-            updates: Vec::new(),
         }
     }
 
@@ -274,12 +268,13 @@ impl Trainer {
 
             let mut batch_iter = loader.0.iter();
             let mut iteration = 0;
-
             let mut start = Instant::now();
             while let Some(batch) = batch_iter.next() {
-                let weights = self.weights(epoch, iteration);
+                let progress = batch_iter.progress();
+                let weights = self.weights(epoch, &progress);
+
                 let regression = learner.train_step(&batch, &weights);
-                learner = learner.optim(&regression, &weights, iteration);
+                learner = learner.optim(&regression, &weights, &progress);
 
                 let metadata = MetricMetadata {
                     progress: batch_iter.progress(),
@@ -304,10 +299,11 @@ impl Trainer {
 
             let mut batch_iter = loader.1.iter();
             let mut iteration = 0;
-
             let mut start = Instant::now();
             while let Some(batch) = batch_iter.next() {
-                let weights = self.weights(epoch, iteration);
+                let progress = batch_iter.progress();
+                let weights = self.weights(epoch, &progress);
+
                 let regression = learner.valid_step(&batch, &weights);
 
                 let metadata = MetricMetadata {
@@ -356,20 +352,21 @@ impl Trainer {
         let _ = render_thread.join();
     }
 
-    fn weights(&self, epoch: usize, iteration: usize) -> Weights {
+    fn weights(&self, epoch: usize, progress: &Progress) -> Weights {
         let config = if epoch < self.config.weights.len() {
             &self.config.weights[epoch]
         } else {
             &self.config.weights.last().unwrap()
         };
 
-        let eps = (config.eps * config.eps_decay.powi(iteration as i32)).max(config.eps_min);
+        let ratio = progress.items_processed as f64 / progress.items_total as f64;
+        let eps = config.eps_start + (config.eps_end - config.eps_start) * ratio;
 
         Weights {
             learning_rate: config.learning_rate,
             gamma: config.gamma,
             eps,
-            target_update: config.target_update,
+            offline_count: config.offline_update,
         }
     }
 }

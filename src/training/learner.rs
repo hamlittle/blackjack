@@ -1,6 +1,8 @@
 use std::iter::zip;
 
 use burn::{
+    data::dataloader::Progress,
+    module::AutodiffModule,
     nn::loss::{MseLoss, Reduction},
     optim::{GradientsParams, Optimizer},
     tensor::{Int, Tensor, TensorData, backend::AutodiffBackend, cast::ToElement},
@@ -22,10 +24,10 @@ where
     O: Optimizer<Model<B>, B>,
 {
     online: Model<B>,
-    target: Model<B>,
+    offline: Model<B::InnerBackend>,
     optim: O,
     device: B::Device,
-    iteration: usize,
+    offline_count: usize,
 }
 
 #[derive(Copy, Clone)]
@@ -33,7 +35,7 @@ pub struct Weights {
     pub learning_rate: f64,
     pub gamma: f32,
     pub eps: f64,
-    pub target_update: u32,
+    pub offline_count: u32,
 }
 
 impl<B, O> Learner<B, O>
@@ -44,35 +46,45 @@ where
     pub fn new(model: Model<B>, optim: O, device: B::Device) -> Self {
         Self {
             online: model.clone(),
-            target: model,
+            offline: model.clone().valid(),
             optim,
             device,
-            iteration: 0,
+            offline_count: 0,
         }
     }
 
-    pub fn valid_step(&self, batch: &GameBatch<B>, weights: &Weights) -> RegressionOutput<B> {
-        let mut weights = weights.clone();
-        weights.eps = 0.0;
+    // pub fn valid_step(&self, batch: &GameBatch<B>, weights: &Weights) -> RegressionOutput<B> {
+    //     let mut weights = weights.clone();
+    //     weights.eps = 0.0;
 
-        self.train_step(batch, &weights)
-    }
+    //     self.train_step(batch, &weights)
+    // }
 
     pub fn train_step(&self, batch: &GameBatch<B>, weights: &Weights) -> RegressionOutput<B> {
-        let decisions = self.online.forward(batch.input.clone());
-        let actions = self.apply_exploration(decisions.clone(), weights.eps);
-        let rewards = self.compute_reward(
-            decisions.clone(),
-            zip(&batch.games, &actions),
-            weights.gamma,
-        );
-        let targets = self.update_target(decisions.clone(), zip(&actions, &rewards));
-        let loss = MseLoss::new().forward(decisions.clone(), targets.clone(), Reduction::Mean);
+        let q = self.online.forward(batch.input.clone());
+        let actions = self.apply_exploration(q.clone(), weights.eps);
+        let rewards = self.compute_next_reward(batch.games.clone(), &actions, weights.gamma);
+        let target_q = self.update_target(q.clone(), &actions, &rewards);
+        let loss = MseLoss::new().forward(q.clone(), target_q.clone(), Reduction::Mean);
 
         RegressionOutput {
             loss,
-            output: decisions,
-            targets,
+            output: q,
+            targets: target_q,
+        }
+    }
+
+    pub fn valid_step(&self, batch: &GameBatch<B>, _weights: &Weights) -> RegressionOutput<B> {
+        let q = self.online.forward(batch.input.clone());
+        let actions = self.apply_exploration(q.clone(), 0.0);
+        let rewards = self.compute_terminal_reward(batch.games.clone());
+        let target_q = self.update_target(q.clone(), &actions, &rewards);
+        let loss = MseLoss::new().forward(q.clone(), target_q.clone(), Reduction::Mean);
+
+        RegressionOutput {
+            loss,
+            output: q,
+            targets: target_q,
         }
     }
 
@@ -80,14 +92,14 @@ where
         mut self,
         regression: &RegressionOutput<B>,
         weights: &Weights,
-        iteration: usize,
+        progress: &Progress,
     ) -> Self {
         let grads = GradientsParams::from_grads(regression.loss.backward(), &self.online);
         self.online = self.optim.step(weights.learning_rate, self.online, grads);
 
-        if iteration - self.iteration > weights.target_update as usize {
-            self.target = self.online.clone();
-            self.iteration = iteration;
+        if progress.items_processed - self.offline_count > weights.offline_count as usize {
+            self.offline = self.online.valid().clone();
+            self.offline_count = progress.items_processed;
         }
 
         self
@@ -113,109 +125,89 @@ where
             .collect()
     }
 
-    fn compute_reward<'a, I>(&self, decisions: Tensor<B, 2>, batch: I, discount: f32) -> Vec<f32>
-    where
-        I: IntoIterator<Item = (&'a Game, &'a Action)>,
-        I::IntoIter: Send,
-    {
-        // batch
-        //     .into_iter()
-        //     .map(|(game, action)| (game, Simulation::new(game.clone()).forward(*action)))
-        //     .map(|(game, outcomes)| {
-        //         outcomes
-        //             .into_iter()
-        //             .map(|outcome| match outcome {
-        //                 Some(outcome) => self.compute_current_reward(outcome),
-        //                 None => self.compute_future_reward(game, discount),
-        //             })
-        //             .sum()
-        //     })
-        //     .collect()
+    fn compute_next_reward(&self, games: Vec<Game>, actions: &[Action], discount: f32) -> Vec<f32> {
+        assert_eq!(games.len(), actions.len());
 
-        // Get the outcomes for each game (may or may not be terminal)
-        let outcomes: Vec<_> = batch
+        zip(games, actions)
             .into_iter()
-            .map(|(game, action)| Simulation::new(game.clone()).forward(*action))
-            .collect();
+            .map(|(game, action)| Simulation::new(game).forward(*action))
+            .map(|game| match game.player_outcome(0) {
+                Some(outcome) => match outcome {
+                    Outcome::PlayerWin(amount) => amount,
+                    Outcome::Push => 0.0,
+                    Outcome::DealerWin(bet) => -bet,
+                },
+                None => {
+                    let new_state =
+                        Model::normalize(game.player_score(0), game.dealer_upcard(), &self.device);
+                    let next_q = self.offline.forward(new_state.clone());
+                    let predicted_reward = next_q.max_dim(1).into_scalar().to_f32();
 
-        // Store original indices to maintain order
-        let (terminated, unterminated): (Vec<_>, Vec<_>) = outcomes
-            .iter()
-            .enumerate()
-            .partition(|(_, outcome)| outcome.is_some());
-
-        // Compute rewards for terminated hands (in order)
-        let mut rewards = vec![0.0; outcomes.len()];
-
-        for (ndx, outcome) in &terminated {
-            rewards[*ndx] = match outcome.unwrap() {
-                Outcome::PlayerWin(amount) => amount,
-                Outcome::Push => 0.0,
-                Outcome::DealerWin(bet) => -bet,
-            }
-        }
-
-        // If no unterminated states exist, return immediately
-        if unterminated.is_empty() {
-            return rewards;
-        }
-
-        // create a tensor to select the indices of the unterminated games from the forward-pass
-        let unterminated_games: Vec<_> = unterminated.iter().map(|(ndx, _)| *ndx).collect();
-        let indices = Tensor::<B, 1, Int>::from_data(unterminated_games.as_slice(), &self.device);
-        let future_rewards = decisions.select(0, indices).max_dim(1);
-
-        // apply discounting for future rewards
-        let discounted_rewards = future_rewards * discount;
-
-        // insert the discounted future rewards into the empty slots
-        let discounted_rewards = discounted_rewards.to_data().to_vec().unwrap();
-        for (ndx, game) in unterminated_games.iter().enumerate() {
-            rewards[*game] = discounted_rewards[ndx]
-        }
-
-        // sanity check: Union(terminated, unterminated) should account for every game in the batch
-        let mut all_games: Vec<usize> = terminated.iter().map(|(game, _)| *game).collect();
-        all_games.extend(unterminated_games);
-        all_games.sort();
-
-        let expected: Vec<usize> = (0..outcomes.len()).collect();
-        assert_eq!(expected, all_games);
-
-        // return the combined current (terminated) and future rewards (unterminated) rewards
-        rewards
-
-        // // Collect unterminated hands into a batch tensor
-        // let states: Vec<Tensor<B, 2>> = unterminated
-        //     .iter()
-        //     .map(|(_, (game, _))| {
-        //         Model::normalize(game.player_score(0), game.dealer_upcard(), &self.device)
-        //     })
-        //     .collect();
-
-        // let batch_tensor = Tensor::cat(states, 0);
-
-        // // Single forward pass for all unterminated states
-        // let predicted_qs = self.target.forward(batch_tensor);
-
-        // Extract max Q-values for each state
-        // let predicted_rewards = predicted_qs.max_dim(1).to_data().to_vec::<f32>().unwrap();
-
-        // Assign discounted rewards in the correct order
+                    discount * predicted_reward
+                }
+            })
+            .collect()
     }
 
-    fn update_target<'a, I>(&self, target: Tensor<B, 2>, batch: I) -> Tensor<B, 2>
-    where
-        I: IntoIterator<Item = (&'a Action, &'a f32)>,
-    {
-        let dims = target.dims();
-        let mut data = target.to_data().to_vec::<f32>().unwrap();
-
-        batch
+    fn compute_terminal_reward(&self, games: Vec<Game>) -> Vec<f32> {
+        games
             .into_iter()
+            .map(|mut game| {
+                let mut first_hand = true;
+                while game.player_outcome(0).is_none() {
+                    let input = Model::<B>::normalize(
+                        game.player_score(0),
+                        game.dealer_upcard(),
+                        &self.device,
+                    );
+                    let q = self.model().valid().forward(input.valid());
+
+                    let valid_q = if !first_hand {
+                        let filter = [Action::Hit, Action::Stand].map(usize::from);
+                        let filter = Tensor::<B, 1, Int>::from_data(filter, &self.device);
+
+                        q.select(1, filter.valid())
+                    } else {
+                        q
+                    };
+
+                    let action: Action = valid_q
+                        .argmax(1)
+                        .into_scalar()
+                        .to_usize()
+                        .try_into()
+                        .unwrap();
+
+                    first_hand = false;
+                    game = Simulation::new(game).forward(action);
+                }
+
+                match game.player_outcome(0).unwrap() {
+                    Outcome::PlayerWin(amount) => amount,
+                    Outcome::DealerWin(bet) => bet,
+                    Outcome::Push => 0.0,
+                }
+            })
+            .collect()
+    }
+
+    fn update_target(
+        &self,
+        input: Tensor<B, 2>,
+        actions: &[Action],
+        rewards: &[f32],
+    ) -> Tensor<B, 2> {
+        let dims = input.dims();
+
+        assert_eq!(dims[0], actions.len());
+        assert_eq!(dims[0], rewards.len());
+
+        let mut data = input.to_data().to_vec::<f32>().unwrap();
+
+        zip(actions, rewards)
             .enumerate()
-            .for_each(|(channel, (action, reward))| {
-                let row: usize = channel * dims[1];
+            .for_each(|(batch, (action, reward))| {
+                let row: usize = batch * dims[1];
                 let col: usize = (*action).try_into().unwrap();
                 data[row + col] = *reward;
             });

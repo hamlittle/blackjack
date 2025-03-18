@@ -1,4 +1,4 @@
-use crate::game::game::{Game, Outcome};
+use crate::game::game::Game;
 
 use super::model::Action;
 
@@ -11,7 +11,7 @@ impl Simulation {
         Self { game }
     }
 
-    pub fn forward(&mut self, action: Action) -> Option<Outcome> {
+    pub fn forward(mut self, action: Action) -> Game {
         match action {
             Action::Hit => {
                 self.game.player_hit(0);
@@ -31,6 +31,6 @@ impl Simulation {
             Action::Split => panic!("ERR! Model does not evaluate split."),
         }
 
-        self.game.player_outcome(0)
+        self.game
     }
 }

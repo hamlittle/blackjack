@@ -2,13 +2,13 @@ use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::*,
 };
-use log::info;
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+// use log::info;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
-    fs::File,
-    io::{BufRead, BufReader},
+    // fs::File,
+    // io::{BufRead, BufReader},
     path::Path,
-    time::Instant,
+    // time::Instant,
 };
 
 use crate::{
@@ -23,8 +23,8 @@ pub struct GameDataset {
 }
 
 impl GameDataset {
-    pub fn new(source: &Path, size: usize) -> Self {
-        let start = Instant::now();
+    pub fn new(_source: &Path, size: usize) -> Self {
+        // let start = Instant::now();
 
         // let reader = BufReader::new(File::open(source).unwrap());
         // let games: Vec<_> = reader
@@ -58,7 +58,7 @@ fn blackjack(cards: [Card; 2]) -> bool {
 }
 
 impl Dataset<Game> for GameDataset {
-    fn get(&self, ndx: usize) -> Option<Game> {
+    fn get(&self, _ndx: usize) -> Option<Game> {
         // // loop if ndx is more than number of games stored
         // let ndx = ndx % self.games.len();
 

@@ -75,6 +75,10 @@ impl Game {
 
         self.players.push(Player::new(bet));
 
+        self.players.len() - 1
+    }
+
+    pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
@@ -165,7 +169,7 @@ impl Game {
 
         self.players.push(split_play);
 
-        self.players.len()
+        self.players.len() - 1
     }
 
     pub fn player_surrender(&mut self, player: usize) -> Outcome {
