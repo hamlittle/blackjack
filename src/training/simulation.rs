@@ -1,6 +1,17 @@
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use strum::EnumIter;
+
 use crate::game::game::Game;
 
-use super::model::Action;
+#[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, PartialEq, Debug)]
+#[repr(usize)]
+pub enum Action {
+    Hit,
+    Stand,
+    Double,
+    Surrender,
+    Split,
+}
 
 pub struct Simulation {
     game: Game,
@@ -11,24 +22,23 @@ impl Simulation {
         Self { game }
     }
 
-    pub fn forward(mut self, action: Action) -> Game {
+    pub fn forward(mut self, player: usize, action: Action) -> Game {
         match action {
             Action::Hit => {
-                self.game.player_hit(0);
+                self.game.player_hit(player);
             }
             Action::Stand => {
-                self.game.player_stand(0);
-                self.game.end();
+                self.game.player_stand(player);
             }
             Action::Double => {
-                self.game.player_double(0);
-                self.game.end();
+                self.game.player_double(player);
             }
             Action::Surrender => {
-                self.game.player_surrender(0);
-                self.game.end();
+                self.game.player_surrender(player);
             }
-            Action::Split => panic!("ERR! Model does not evaluate split."),
+            Action::Split => {
+                self.game.player_split(player);
+            }
         }
 
         self.game

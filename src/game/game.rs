@@ -176,6 +176,10 @@ impl Game {
         self.players[player].action_surrender()
     }
 
+    pub fn player_active(&self, player: usize) -> bool {
+        !self.players[player].stand
+    }
+
     pub fn player_hand(&self, player: usize) -> Vec<Card> {
         self.players[player].hand.clone()
     }

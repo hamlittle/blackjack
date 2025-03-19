@@ -7,16 +7,7 @@ use strum::{EnumIter, IntoEnumIterator};
 
 use crate::game::{card::Card, game::Score};
 
-#[derive(TryFromPrimitive, IntoPrimitive, EnumIter, Clone, Copy, PartialEq, Debug)]
-#[repr(usize)]
-pub enum Action {
-    Hit,
-    Stand,
-    Double,
-    Surrender,
-    /// Model does not evaluate splits
-    Split,
-}
+use super::simulation::{Action, Simulation};
 
 #[derive(IntoPrimitive, EnumIter)]
 #[repr(usize)]

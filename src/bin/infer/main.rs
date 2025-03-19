@@ -6,9 +6,9 @@ use blackjack::{
         game::{Game, Outcome, Score},
     },
     training::{
-        data::{GameBatcher, GameDataset},
-        model::{Action, Model},
-        training::TrainingConfig,
+        data::GameDataset,
+        ppo::{Model, State},
+        simulation::Action,
     },
 };
 use burn::{
@@ -19,7 +19,14 @@ use burn::{
     record::{CompactRecorder, Recorder},
     tensor::{Int, Tensor, cast::ToElement},
 };
+use data::ModelBatcher;
 use strum::IntoEnumIterator;
+use train::TrainingConfig;
+
+mod data;
+mod metrics;
+mod render;
+mod train;
 
 pub fn expected_value(
     player_score: Score,
@@ -28,7 +35,13 @@ pub fn expected_value(
     model: &Model<Candle>,
     device: &CandleDevice,
 ) -> f32 {
-    let state = Model::<Candle>::normalize(player_score, dealer_upcard, &device);
+    let state = Model::<Candle>::normalize(
+        &[State {
+            player_score,
+            dealer_upcard,
+        }],
+        &device,
+    );
     let output = model.forward(state);
 
     let filter: Vec<usize> = match filter {
@@ -48,23 +61,29 @@ pub fn best_action(
     model: &Model<Candle>,
     device: &CandleDevice,
 ) -> Action {
-    if first_play && can_split {
-        let ev = expected_value(player_score, dealer_upcard, None, model, device);
+    // if first_play && can_split {
+    //     let ev = expected_value(player_score, dealer_upcard, None, model, device);
 
-        let split_ev = expected_value(
-            Score::Hard(player_score.value() / 2),
+    //     let split_ev = expected_value(
+    //         Score::Hard(player_score.value() / 2),
+    //         dealer_upcard,
+    //         Some(&[Action::Hit, Action::Stand]),
+    //         model,
+    //         device,
+    //     ) * 2.0;
+
+    //     if split_ev > ev {
+    //         return Action::Split;
+    //     }
+    // }
+
+    let state = Model::<Candle>::normalize(
+        &[State {
+            player_score,
             dealer_upcard,
-            Some(&[Action::Hit, Action::Stand]),
-            model,
-            device,
-        ) * 2.0;
-
-        if split_ev > ev {
-            return Action::Split;
-        }
-    }
-
-    let state = Model::<Candle>::normalize(player_score, dealer_upcard, &device);
+        }],
+        &device,
+    );
     let output = model.forward(state);
 
     let output = if !first_play {
@@ -169,10 +188,10 @@ pub fn evaluate_gameplay(
 pub fn main() {
     let device = CandleDevice::default();
 
-    let dir = "training/best";
-    // let dir = "/tmp/training";
+    // let dir = "training/best";
+    let dir = "/tmp/training";
     let model = "model";
-    let rounds = 8390;
+    let rounds = 10_000;
 
     let config = TrainingConfig::load(format!("{dir}/config.json"))
         .expect("Config should exist for the model.");
@@ -183,8 +202,8 @@ pub fn main() {
 
     let model = config.model.init::<Candle>(&device).load_record(record);
 
-    let dataset = GameDataset::new(Path::new("out/shoes.1-25000.ndjson"), rounds);
-    let batcher = GameBatcher::<Candle>::new(device.clone());
+    let dataset = GameDataset::new(rounds);
+    let batcher = ModelBatcher::<Candle>::new(device.clone());
     let loader = DataLoaderBuilder::new(batcher)
         .batch_size(1)
         .num_workers(1)
@@ -201,29 +220,29 @@ pub fn main() {
         action_counts[usize::from(first_action)] += 1;
     }
 
-    let splits = vec![
-        // (Score::Hard(4), Rank::Two..=Rank::Seven, Action::Split),
-        // (Score::Hard(4), Rank::Eight..=Rank::Ace, Action::Hit),
-        // (Score::Hard(6), Rank::Two..=Rank::Seven, Action::Split),
-        // (Score::Hard(6), Rank::Eight..=Rank::Ace, Action::Hit),
-        (Score::Hard(8), Rank::Two..=Rank::Four, Action::Split),
-        (Score::Hard(8), Rank::Five..=Rank::Six, Action::Split),
-        (Score::Hard(8), Rank::Six..=Rank::Ace, Action::Hit),
-        (Score::Hard(10), Rank::Two..=Rank::Nine, Action::Double),
-        (Score::Hard(10), Rank::Ten..=Rank::Ace, Action::Hit),
-        (Score::Hard(12), Rank::Two..=Rank::Six, Action::Split),
-        (Score::Hard(12), Rank::Seven..=Rank::Ace, Action::Hit),
-        (Score::Hard(14), Rank::Two..=Rank::Seven, Action::Split),
-        (Score::Hard(14), Rank::Eight..=Rank::Ace, Action::Hit),
-        (Score::Hard(16), Rank::Two..=Rank::Ten, Action::Split),
-        (Score::Hard(16), Rank::Ace..=Rank::Ace, Action::Surrender),
-        (Score::Hard(18), Rank::Two..=Rank::Six, Action::Split),
-        (Score::Hard(18), Rank::Seven..=Rank::Seven, Action::Stand),
-        (Score::Hard(18), Rank::Eight..=Rank::Nine, Action::Split),
-        (Score::Hard(18), Rank::Ten..=Rank::Ace, Action::Stand),
-        (Score::Hard(20), Rank::Two..=Rank::Ace, Action::Stand),
-        // (Score::Hard(22), Rank::Two..=Rank::Ace, Action::Split),
-    ];
+    // let splits = vec![
+    //     // (Score::Hard(4), Rank::Two..=Rank::Seven, Action::Split),
+    //     // (Score::Hard(4), Rank::Eight..=Rank::Ace, Action::Hit),
+    //     // (Score::Hard(6), Rank::Two..=Rank::Seven, Action::Split),
+    //     // (Score::Hard(6), Rank::Eight..=Rank::Ace, Action::Hit),
+    //     (Score::Hard(8), Rank::Two..=Rank::Four, Action::Split),
+    //     (Score::Hard(8), Rank::Five..=Rank::Six, Action::Split),
+    //     (Score::Hard(8), Rank::Six..=Rank::Ace, Action::Hit),
+    //     (Score::Hard(10), Rank::Two..=Rank::Nine, Action::Double),
+    //     (Score::Hard(10), Rank::Ten..=Rank::Ace, Action::Hit),
+    //     (Score::Hard(12), Rank::Two..=Rank::Six, Action::Split),
+    //     (Score::Hard(12), Rank::Seven..=Rank::Ace, Action::Hit),
+    //     (Score::Hard(14), Rank::Two..=Rank::Seven, Action::Split),
+    //     (Score::Hard(14), Rank::Eight..=Rank::Ace, Action::Hit),
+    //     (Score::Hard(16), Rank::Two..=Rank::Ten, Action::Split),
+    //     (Score::Hard(16), Rank::Ace..=Rank::Ace, Action::Surrender),
+    //     (Score::Hard(18), Rank::Two..=Rank::Six, Action::Split),
+    //     (Score::Hard(18), Rank::Seven..=Rank::Seven, Action::Stand),
+    //     (Score::Hard(18), Rank::Eight..=Rank::Nine, Action::Split),
+    //     (Score::Hard(18), Rank::Ten..=Rank::Ace, Action::Stand),
+    //     (Score::Hard(20), Rank::Two..=Rank::Ace, Action::Stand),
+    //     // (Score::Hard(22), Rank::Two..=Rank::Ace, Action::Split),
+    // ];
 
     let softs = vec![
         (Score::Soft(13), Rank::Two..=Rank::Four, Action::Hit),
@@ -282,8 +301,8 @@ pub fn main() {
         (Score::Hard(20), Rank::Two..=Rank::Ace, Action::Stand),
     ];
 
-    println!("---");
-    let splits = evaluate_accuracy("Split", &splits, true, &model, &device);
+    // println!("---");
+    // let splits = evaluate_accuracy("Split", &splits, true, &model, &device);
     println!("---");
     let softs = evaluate_accuracy("Soft", &softs, false, &model, &device);
     println!("---");
@@ -304,12 +323,12 @@ pub fn main() {
         action_counts[usize::from(Action::Surrender)],
         action_counts[usize::from(Action::Split)]
     );
-    println!(
-        "Splits: {} / {} -> {:.1} %",
-        splits.0,
-        splits.0 + splits.1,
-        splits.2 * 100.0
-    );
+    // println!(
+    //     "Splits: {} / {} -> {:.1} %",
+    //     splits.0,
+    //     splits.0 + splits.1,
+    //     splits.2 * 100.0
+    // );
     println!(
         "Softs: {} / {} -> {:.1} %",
         softs.0,
@@ -341,7 +360,13 @@ fn evaluate_accuracy(
                 suit: Suit::Diamonds,
             };
 
-            let state = Model::<Candle>::normalize(*player_score, dealer_upcard, &device);
+            let state = Model::<Candle>::normalize(
+                &[State {
+                    player_score: *player_score,
+                    dealer_upcard,
+                }],
+                &device,
+            );
             let q_values = model.forward(state);
 
             let chose_action = best_action(
