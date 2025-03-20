@@ -39,6 +39,9 @@ impl Shoe {
                 }
             }
         }
+
+        assert_eq!(52 * deck_count, cards.len());
+
         Shoe { cards, n_dealt: 0 }
     }
 

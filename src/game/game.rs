@@ -33,7 +33,7 @@ pub enum Outcome {
     Push,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Score {
     Hard(u8),
     Soft(u8),
@@ -49,32 +49,12 @@ impl Game {
         }
     }
 
-    pub fn new_exact(shoe: Shoe, dealer_hand: Vec<Card>, players: Vec<(f32, Vec<Card>)>) -> Self {
-        let players: Vec<_> = players
-            .into_iter()
-            .map(|(bet, cards)| {
-                let mut player = Player::new(bet);
-                player.hand = cards;
-
-                player
-            })
-            .collect();
-
-        Self {
-            shoe,
-            dealer_hand,
-            players,
-            status: GameStatus::PlaceBets,
-        }
-    }
-
     pub fn add_player(&mut self, bet: f32) -> usize {
         if self.status != GameStatus::PlaceBets {
             panic!("Cannot add player after game has started.");
         }
 
         self.players.push(Player::new(bet));
-
         self.players.len() - 1
     }
 
@@ -143,20 +123,32 @@ impl Game {
     }
 
     pub fn player_hit(&mut self, player: usize) -> Option<Outcome> {
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Game is not in progress");
+        }
+
         self.players[player].action_hit(self.shoe.one().unwrap())
     }
 
     pub fn player_stand(&mut self, player: usize) {
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Game is not in progress");
+        }
+
         self.players[player].action_stand();
     }
 
     pub fn player_double(&mut self, player: usize) -> Option<Outcome> {
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Game is not in progress");
+        }
+
         self.players[player].action_double(self.shoe.one().unwrap())
     }
 
     pub fn player_split(&mut self, player: usize) -> usize {
         if self.status != GameStatus::PlayerTurn {
-            panic!("Cannot split unless player turn.");
+            panic!("Game is not in progress");
         }
 
         let player = &mut self.players[player];
@@ -168,28 +160,23 @@ impl Game {
         split_play.hand.push(self.shoe.one().unwrap());
 
         self.players.push(split_play);
-
         self.players.len() - 1
     }
 
     pub fn player_surrender(&mut self, player: usize) -> Outcome {
-        self.players[player].action_surrender()
-    }
+        if self.status != GameStatus::PlayerTurn {
+            panic!("Game is not in progress");
+        }
 
-    pub fn player_active(&self, player: usize) -> bool {
-        !self.players[player].stand
+        self.players[player].action_surrender()
     }
 
     pub fn player_hand(&self, player: usize) -> Vec<Card> {
         self.players[player].hand.clone()
     }
 
-    pub fn dealer_hand(&self) -> Vec<Card> {
-        self.dealer_hand.clone()
-    }
-
-    pub fn player_bet(&self, player: usize) -> f32 {
-        self.players[player].bet
+    pub fn player_active(&self, player: usize) -> bool {
+        !self.players[player].stand
     }
 
     pub fn player_score(&self, player: usize) -> Score {
@@ -202,10 +189,6 @@ impl Game {
 
     pub fn dealer_upcard(&self) -> Card {
         self.dealer_hand[0]
-    }
-
-    pub fn shoe(&self) -> Shoe {
-        self.shoe.clone()
     }
 }
 
@@ -220,8 +203,8 @@ impl Player {
     }
 
     fn action_hit(&mut self, card: Card) -> Option<Outcome> {
-        if self.stand {
-            panic!("Cannot hit after standing.");
+        if self.stand || self.outcome.is_some() {
+            panic!("Player is not active");
         }
 
         self.hand.push(card);
@@ -235,12 +218,16 @@ impl Player {
     }
 
     fn action_stand(&mut self) {
+        if self.stand || self.outcome.is_some() {
+            panic!("Player is not active");
+        }
+
         self.stand = true;
     }
 
     fn action_double(&mut self, card: Card) -> Option<Outcome> {
-        if self.stand {
-            panic!("Cannot double after standing.");
+        if self.stand || self.outcome.is_some() {
+            panic!("Player is not active");
         }
 
         if self.hand.len() != 2 {
@@ -249,14 +236,14 @@ impl Player {
 
         self.bet *= 2.0;
         self.action_hit(card);
-        self.action_stand();
+        self.stand = true;
 
         self.outcome
     }
 
     fn action_split(&mut self) -> Card {
-        if self.stand {
-            panic!("Cannot split after standing.");
+        if self.stand || self.outcome.is_some() {
+            panic!("Player is not active");
         }
 
         if self.hand.len() != 2 {
@@ -271,8 +258,8 @@ impl Player {
     }
 
     pub fn action_surrender(&mut self) -> Outcome {
-        if self.stand {
-            panic!("Cannot surrender after standing.");
+        if self.stand || self.outcome.is_some() {
+            panic!("Player is not active");
         }
 
         if self.hand.len() != 2 {
