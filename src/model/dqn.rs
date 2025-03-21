@@ -1,5 +1,4 @@
 use burn::{
-    module::AutodiffModule,
     nn::{
         Linear, LinearConfig,
         loss::{MseLoss, Reduction},

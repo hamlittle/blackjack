@@ -198,15 +198,17 @@ where
     }
 
     fn generate(&self, count: usize, truncate: usize, exploration: f32) -> Vec<ReplayItem<B>> {
-        let dataset = GameDataset::new(count, truncate);
+        let dataset = GameDataset::new(count, 6, true, Some(truncate));
         let mut iter = DatasetIterator::new(&dataset);
 
         (0..count)
             .into_iter()
             .map(|_| {
-                let game = iter.next().unwrap();
-                let state = State::new(game.clone());
+                let mut game = iter.next().unwrap();
+                game.add_player(1.0);
+                game.start();
 
+                let state = State::new(game.clone());
                 let action = if exploration == 1.0 || rand::rng().random::<f32>() < exploration {
                     rand::rng().random_range(0..Dqn::<B>::output_size())
                 } else {
@@ -296,7 +298,7 @@ where
             metrics.discount.update(
                 hyper.weights.gamma as f64,
                 hyper.batch_size,
-                FormatOptions::new("discount").precision(2),
+                FormatOptions::new("discount").precision(3),
             ),
             metrics.discount.value(),
         ));

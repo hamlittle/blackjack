@@ -6,35 +6,39 @@ use burn::{
 use train::{Hyper, TrainingConfig};
 
 #[rustfmt::skip]
-const WEIGHTS: [Weights; 10] = [
+const WEIGHTS: [Weights; 11] = [
     Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.90 },
-    Weights { lr: 5.0e-5, gamma: 0.990, eps: 0.90 },
-    Weights { lr: 2.5e-5, gamma: 0.990, eps: 0.70 },
-    Weights { lr: 1.0e-5, gamma: 0.990, eps: 0.50 },
+    Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.90 },
+    Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.70 },
+    Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.50 },
 
-    Weights { lr: 5.0e-6, gamma: 0.990, eps: 0.30 },
-    Weights { lr: 2.5e-6, gamma: 0.990, eps: 0.20 },
-    Weights { lr: 1.0e-6, gamma: 0.995, eps: 0.15 },
-    Weights { lr: 5.0e-7, gamma: 0.995, eps: 0.10 },
+    Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.30 },
+    Weights { lr: 1.0e-4, gamma: 0.990, eps: 0.20 },
+    Weights { lr: 1.0e-4, gamma: 0.995, eps: 0.15 },
+    Weights { lr: 1.0e-4, gamma: 0.995, eps: 0.10 },
 
-    Weights { lr: 2.5e-8, gamma: 0.995, eps: 0.05 },
-    Weights { lr: 1.0e-8, gamma: 0.995, eps: 0.05 },
+    Weights { lr: 1.0e-5, gamma: 0.995, eps: 0.05 },
+    Weights { lr: 1.0e-5, gamma: 0.995, eps: 0.05 },
+
+    Weights { lr: 1.0e-5, gamma: 1.00, eps: 0.05 },
 ];
 
 #[rustfmt::skip]
-const HYPER: [Hyper; 10] = [
-    Hyper { weights: WEIGHTS[0], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 20 },
-    Hyper { weights: WEIGHTS[1], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 20 },
-    Hyper { weights: WEIGHTS[2], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 20 },
-    Hyper { weights: WEIGHTS[3], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 20 },
+const HYPER: [Hyper; 11] = [
+    Hyper { weights: WEIGHTS[0], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 52 },
+    Hyper { weights: WEIGHTS[1], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 52 },
+    Hyper { weights: WEIGHTS[2], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 52 },
+    Hyper { weights: WEIGHTS[3], iterations:    100_000, replay:  25_000, batch_size: 128, gen_steps: 4, train_steps: 1, trunc: 52 },
 
-    Hyper { weights: WEIGHTS[4], iterations:    500_000, replay:  50_000, batch_size: 128, gen_steps: 4, train_steps: 2, trunc: 20 },
-    Hyper { weights: WEIGHTS[5], iterations:    500_000, replay:  75_000, batch_size: 256, gen_steps: 4, train_steps: 2, trunc: 20 },
-    Hyper { weights: WEIGHTS[6], iterations:    500_000, replay:  75_000, batch_size: 256, gen_steps: 4, train_steps: 2, trunc: 20 },
-    Hyper { weights: WEIGHTS[7], iterations:    500_000, replay:  75_000, batch_size: 256, gen_steps: 4, train_steps: 2, trunc: 20 },
+    Hyper { weights: WEIGHTS[4], iterations:    200_000, replay:  50_000, batch_size: 128, gen_steps: 4, train_steps: 2, trunc: 52 },
+    Hyper { weights: WEIGHTS[5], iterations:    200_000, replay:  75_000, batch_size: 128, gen_steps: 4, train_steps: 2, trunc: 52 },
+    Hyper { weights: WEIGHTS[6], iterations:    400_000, replay:  100_000, batch_size: 256, gen_steps: 4, train_steps: 2, trunc: 52 },
+    Hyper { weights: WEIGHTS[7], iterations:    400_000, replay:  100_000, batch_size: 256, gen_steps: 4, train_steps: 2, trunc: 52 },
 
-    Hyper { weights: WEIGHTS[8], iterations:    4_000_000, replay:  150_000, batch_size: 512, gen_steps: 4, train_steps: 3, trunc: 20 },
-    Hyper { weights: WEIGHTS[9], iterations:    4_000_000, replay:  150_000, batch_size: 512, gen_steps: 4, train_steps: 3, trunc: 20 },
+    Hyper { weights: WEIGHTS[8], iterations:    1_000_000, replay:  150_000, batch_size: 512, gen_steps: 4, train_steps: 3, trunc: 52 },
+    Hyper { weights: WEIGHTS[9], iterations:    1_000_000, replay:  150_000, batch_size: 512, gen_steps: 4, train_steps: 3, trunc: 52 },
+
+    Hyper { weights: WEIGHTS[10], iterations:   1_000_000, replay:  150_000, batch_size: 512, gen_steps: 4, train_steps: 4, trunc: 52 },
 ];
 
 mod train;

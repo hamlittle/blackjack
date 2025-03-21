@@ -19,9 +19,7 @@ use burn::{
 };
 use strum::IntoEnumIterator;
 
-use crate::basic_strategy::{
-    HARD_TABLE, Rule, SOFT_TABLE, basic_strategy, should_hit, should_split,
-};
+use crate::basic_strategy::{HARD_TABLE, Rule, SOFT_TABLE, basic_strategy, should_split};
 
 use super::basic_strategy::SPLIT_TABLE;
 
@@ -51,6 +49,11 @@ impl<'a> Accuracy<'a> {
         let mut reports = Vec::new();
 
         for item in &SPLIT_TABLE {
+            // // no training data for initial hands of 2 or 3
+            // if item.player < Rank::Four {
+            //     continue;
+            // }
+
             for dealer in Rank::iter() {
                 if !item.dealer.contains(&dealer) {
                     continue;
@@ -128,16 +131,19 @@ impl<'a> ExpectedValue<'a> {
     }
 
     pub fn eval_gameplay(&self, rounds: usize) -> (f32, f32) {
-        let dataset = GameDataset::new(rounds, 52);
+        let dataset = GameDataset::new(rounds, 6, false, None);
         let mut iter = DatasetIterator::new(&dataset);
 
         let mut model_win_loss = 0.0;
         let mut strat_win_loss = 0.0;
         for _ in 0..rounds {
-            let game = iter.next().unwrap();
+            let mut game = iter.next().unwrap();
 
-            let mut model_game = self.play_as_model(game.clone(), 0, true);
-            let mut strat_game = self.play_as_strat(game.clone(), 0, true);
+            let player = game.add_player(1.0);
+            game.start();
+
+            let mut model_game = self.play_as_model(game.clone(), player, true);
+            let mut strat_game = self.play_as_strat(game.clone(), player, true);
 
             model_win_loss += Self::end_game(&mut model_game);
             strat_win_loss += Self::end_game(&mut strat_game)
@@ -147,6 +153,10 @@ impl<'a> ExpectedValue<'a> {
     }
 
     fn play_as_model(&self, game: Game, player: usize, first_action: bool) -> Game {
+        if !game.player_active(player) {
+            return game;
+        }
+
         let mut game = game;
 
         if first_action && self.model_should_split(&game, player) {
@@ -158,27 +168,45 @@ impl<'a> ExpectedValue<'a> {
             return game;
         }
 
-        let mut first_action = first_action;
-        while game.player_active(player) {
-            let score = game.player_score(player);
-            let dealer = game.dealer_upcard().rank;
+        let score = game.player_score(player);
+        let dealer = game.dealer_upcard().rank;
 
-            let filter = if first_action {
-                None
-            } else {
-                Some([Action::Hit, Action::Stand].as_ref())
-            };
+        let filter = if first_action {
+            None
+        } else {
+            Some([Action::Hit, Action::Stand].as_ref())
+        };
 
-            let (_, _, action) = forward(score, dealer, filter, self.model, self.device);
-            game = Simulation::new(game).forward(player, action);
+        let (_, _, action) = forward(score, dealer, filter, self.model, self.device);
+        game = Simulation::new(game).forward(player, action);
 
-            first_action = false;
-        }
+        self.play_as_model(game, player, false)
 
-        game
+        // let mut first_action = first_action;
+        // while game.player_active(player) {
+        //     let score = game.player_score(player);
+        //     let dealer = game.dealer_upcard().rank;
+
+        //     let filter = if first_action {
+        //         None
+        //     } else {
+        //         Some([Action::Hit, Action::Stand].as_ref())
+        //     };
+
+        //     let (_, _, action) = forward(score, dealer, filter, self.model, self.device);
+        //     game = Simulation::new(game).forward(player, action);
+
+        //     first_action = false;
+        // }
+
+        // game
     }
 
     fn play_as_strat(&self, game: Game, player: usize, first_action: bool) -> Game {
+        if !game.player_active(player) {
+            return game;
+        }
+
         let mut game = game;
 
         if first_action && should_split(&game, player).is_some() {
@@ -189,22 +217,32 @@ impl<'a> ExpectedValue<'a> {
 
             return game;
         }
+        let filter = if first_action {
+            None
+        } else {
+            Some([Action::Hit, Action::Stand].as_ref())
+        };
 
-        let mut first_action = first_action;
-        while game.player_active(player) {
-            let filter = if first_action {
-                None
-            } else {
-                Some([Action::Hit, Action::Stand].as_ref())
-            };
+        let action = basic_strategy(&game, player, filter).unwrap();
+        game = Simulation::new(game).forward(player, action);
 
-            let action = basic_strategy(&game, player, filter).unwrap();
-            game = Simulation::new(game).forward(player, action);
+        self.play_as_strat(game, player, false)
 
-            first_action = false;
-        }
+        // let mut first_action = first_action;
+        // while game.player_active(player) {
+        //     let filter = if first_action {
+        //         None
+        //     } else {
+        //         Some([Action::Hit, Action::Stand].as_ref())
+        //     };
 
-        game
+        //     let action = basic_strategy(&game, player, filter).unwrap();
+        //     game = Simulation::new(game).forward(player, action);
+
+        //     first_action = false;
+        // }
+
+        // game
     }
 
     fn end_game(game: &mut Game) -> f32 {

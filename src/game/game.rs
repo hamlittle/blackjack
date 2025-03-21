@@ -101,6 +101,10 @@ impl Game {
     }
 
     pub fn end(&mut self) {
+        if self.status == GameStatus::GameOver {
+            return;
+        }
+
         if self.status != GameStatus::PlayerTurn {
             panic!("Game is not in progress.");
         }

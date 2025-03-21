@@ -11,14 +11,23 @@ use crate::game::{card::Card, game::Game, shoe::Shoe};
 
 pub struct GameDataset {
     item_count: usize,
-    shoe_truncate: usize,
+    deck_count: usize,
+    reshuffle_blackjack: bool,
+    shoe_truncate: Option<usize>,
 }
 
 impl GameDataset {
-    pub fn new(item_count: usize, shoe_truncate: usize) -> Self {
+    pub fn new(
+        item_count: usize,
+        deck_count: usize,
+        reshuffle_blackjack: bool,
+        shoe_truncate: Option<usize>,
+    ) -> Self {
         Self {
             item_count,
+            deck_count,
             shoe_truncate,
+            reshuffle_blackjack,
         }
     }
 
@@ -29,21 +38,23 @@ impl GameDataset {
 
 impl Dataset<Game> for GameDataset {
     fn get(&self, _ndx: usize) -> Option<Game> {
-        let mut shoe = Shoe::new(6);
-
+        let mut shoe = Shoe::new(self.deck_count);
         shoe.shuffle(&mut rand::rng());
-        while Self::blackjack(shoe.two().unwrap()) || Self::blackjack(shoe.two().unwrap()) {
-            shoe.shuffle(&mut rand::rng());
+
+        if self.reshuffle_blackjack {
+            while Self::blackjack(shoe.two().unwrap()) || Self::blackjack(shoe.two().unwrap()) {
+                shoe.shuffle(&mut rand::rng());
+            }
         }
 
         shoe.reset();
-        shoe.truncate(self.shoe_truncate);
+        shoe.truncate(self.shoe_truncate.unwrap_or(self.deck_count * 52));
 
-        let mut game = Game::new(shoe);
-        game.add_player(1.0);
-        game.start();
+        // let mut game = Game::new(shoe);
+        // game.add_player(1.0);
+        // game.start();
 
-        Some(game)
+        Some(Game::new(shoe))
     }
 
     fn len(&self) -> usize {
