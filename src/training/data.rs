@@ -90,6 +90,7 @@ where
     pub state: Tensor<B, 2>,
     pub action: Tensor<B, 2, Int>,
     pub reward: Tensor<B, 2>,
+    pub split_mul: Tensor<B, 2>,
     pub terminal: Tensor<B, 2>,
     pub next_state: Tensor<B, 2>,
 }

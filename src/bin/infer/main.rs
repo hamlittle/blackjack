@@ -31,7 +31,8 @@ pub fn main() {
     let device = CandleDevice::default();
 
     let dir = "/tmp/training/";
-    let model = "model-6";
+    // let dir = "training/dqn/4";
+    let model = "model-5";
     let verbose = false;
     let rounds = 500_000;
 

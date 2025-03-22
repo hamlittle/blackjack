@@ -1,3 +1,5 @@
+use core::f32;
+
 use burn::{
     nn::{
         Linear, LinearConfig,
@@ -41,29 +43,45 @@ pub struct State {
     pub player: usize,
 }
 
-impl State {
-    const SIZE: usize = 3;
+#[repr(usize)]
+pub enum Input {
+    Score,
+    Soft,
+    Split,
+    Dealer,
+    Size,
+}
 
-    pub fn new(game: Game) -> Self {
-        Self { game, player: 0 }
+impl State {
+    const SIZE: usize = Input::Size as usize;
+
+    pub fn new(game: Game, player: usize) -> Self {
+        Self { game, player }
     }
 
     pub fn normalize(&self) -> [f32; Self::SIZE] {
         let player_score = self.game.player_score(self.player);
+        let player_split = self.game.player_can_split(self.player);
         let dealer_upcard = self.game.dealer_upcard();
 
-        Self::raw_normalize(&player_score, &dealer_upcard)
+        Self::raw_normalize(&player_score, player_split, &dealer_upcard)
     }
 
-    pub fn raw_normalize(player_score: &Score, dealer_upcard: &Card) -> [f32; Self::SIZE] {
+    pub fn raw_normalize(
+        player_score: &Score,
+        player_split: bool,
+        dealer_upcard: &Card,
+    ) -> [f32; Self::SIZE] {
         let player_soft = match player_score {
             Score::Hard(_) => false as u8 as f32,
             Score::Soft(_) => true as u8 as f32,
         };
 
+        // make sure this matches the order in `Input`, or bad things will happen
         [
             player_score.value() as f32 / 21.0,
             player_soft as u8 as f32,
+            player_split as u8 as f32,
             dealer_upcard.rank.value() as f32 / 11.0,
         ]
     }
@@ -112,7 +130,7 @@ where
     }
 
     fn output_size() -> usize {
-        Action::iter().len() - 1
+        Action::iter().len()
     }
 
     fn normalize(state: &[State], device: &B::Device) -> Tensor<B, 2> {
@@ -202,29 +220,43 @@ where
         weights: &Weights,
         iteration: usize,
     ) -> TrainOutput<Tensor<B, 1>> {
+        // println!("---");
         let sample = batch.sample(iteration);
 
         let state = collate(&sample, |item| item.state.clone());
         let action = collate(&sample, |item| item.action.clone());
         let reward = collate(&sample, |item| item.reward.clone());
+        // dbg!(reward.to_data().to_vec::<f32>());
+        let split_mul = collate(&sample, |item| item.split_mul.clone());
+        // dbg!(split_mul.to_data().to_vec::<f32>());
         let terminal = collate(&sample, |item| item.terminal.clone());
+        // dbg!(terminal.to_data().to_vec::<f32>());
         let next_state = collate(&sample, |item| item.next_state.clone());
 
-        let q = self.model.forward(state);
-        let chosen_q = q.clone().gather(1, action.clone());
-
-        let next_filter = Tensor::<B, 1, Int>::from_data(
-            [usize::from(Action::Hit), usize::from(Action::Stand)],
+        let mask = action_mask(
+            action.clone(),
+            next_state.clone(),
+            Dqn::<B>::output_size(),
             &self.device,
         );
 
-        let next_q = self.model.forward(next_state).detach();
-        let max_next_q = next_q.select(1, next_filter).max_dim(1);
+        let q = self.model.forward(state.clone());
+        let chosen_q = q.clone().gather(1, action.clone());
+
+        let next_q = self
+            .model
+            .forward(next_state)
+            .detach()
+            .mask_fill(mask.bool_not(), f32::NEG_INFINITY);
+        // dbg!(next_q.to_data().to_vec::<f32>());
+        let max_next_q = next_q.max_dim(1);
 
         let pending = -(terminal - 1.0);
-        let target = reward + pending * weights.gamma * max_next_q;
+        let target = (reward + pending * weights.gamma * max_next_q) * split_mul;
+        // dbg!(target.to_data().to_vec::<f32>());
 
         let loss = MseLoss::new().forward(chosen_q, target, Reduction::Mean);
+        // dbg!(loss.to_data().to_vec::<f32>());
 
         TrainOutput::new(&self.model, loss.backward(), loss)
     }
@@ -233,6 +265,48 @@ where
         self.model = self.optimizer.step(weights.lr as f64, self.model, grads);
         self
     }
+}
+
+fn action_mask<B: Backend>(
+    action: Tensor<B, 2, Int>,
+    next_state: Tensor<B, 2>,
+    size: usize,
+    device: &B::Device,
+) -> Tensor<B, 2, Bool> {
+    let action = action.to_data().to_vec::<i64>().unwrap();
+
+    let mask = action
+        .iter()
+        .enumerate()
+        .map(|(batch, &action)| {
+            let mut mask = vec![false; size];
+
+            match Action::try_from(action as usize).unwrap() {
+                Action::Split => {
+                    let batch_ndx = Tensor::<B, 1, Int>::from_data([batch], device);
+                    let split_ndx = Tensor::<B, 1, Int>::from_data([Input::Split as u32], device);
+                    let can_split = next_state.clone().select(0, batch_ndx).select(1, split_ndx);
+
+                    if can_split.bool().into_scalar() {
+                        vec![Action::Hit, Action::Stand, Action::Double, Action::Split]
+                    } else {
+                        vec![Action::Hit, Action::Stand, Action::Double]
+                    }
+                }
+                Action::Hit => vec![Action::Hit, Action::Stand],
+                Action::Double | Action::Stand => vec![Action::Stand],
+                Action::Surrender => vec![Action::Surrender],
+            }
+            .into_iter()
+            .for_each(|action| mask[action as usize] = true);
+
+            assert_eq!(mask.len(), size);
+
+            Tensor::<B, 1, Bool>::from_data(mask.as_slice(), device)
+        })
+        .collect();
+
+    Tensor::<B, 1, Bool>::stack(mask, 0)
 }
 
 impl<B, O> Valid<Tensor<B, 1>> for Learner<B, O>

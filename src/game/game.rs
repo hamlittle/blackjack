@@ -150,6 +150,10 @@ impl Game {
         self.players[player].action_double(self.shoe.one().unwrap())
     }
 
+    pub fn player_can_split(&self, player: usize) -> bool {
+        self.players[player].can_split()
+    }
+
     pub fn player_split(&mut self, player: usize) -> usize {
         if self.status != GameStatus::PlayerTurn {
             panic!("Game is not in progress");
@@ -243,6 +247,18 @@ impl Player {
         self.stand = true;
 
         self.outcome
+    }
+
+    fn can_split(&self) -> bool {
+        if self.stand || self.outcome.is_some() {
+            return false;
+        }
+
+        if self.hand.len() != 2 {
+            return false;
+        }
+
+        self.hand[0] == self.hand[1]
     }
 
     fn action_split(&mut self) -> Card {

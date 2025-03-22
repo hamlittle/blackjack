@@ -25,7 +25,7 @@ use burn::{
         state::{FormatOptions, NumericMetricState},
     },
 };
-use rand::Rng;
+use rand::{Rng, seq::IndexedRandom};
 
 #[derive(Config)]
 pub struct Hyper {
@@ -205,37 +205,68 @@ where
             .into_iter()
             .map(|_| {
                 let mut game = iter.next().unwrap();
-                game.add_player(1.0);
+                let player = game.add_player(1.0);
                 game.start();
 
-                let state = State::new(game.clone());
+                let player_hand = game.player_hand(player);
+                let can_split = player_hand[0].rank == player_hand[1].rank;
+                let mask: Vec<_> = match can_split {
+                    true => vec![
+                        Action::Hit,
+                        Action::Stand,
+                        Action::Double,
+                        Action::Surrender,
+                        Action::Split,
+                    ],
+                    false => vec![
+                        Action::Hit,
+                        Action::Stand,
+                        Action::Double,
+                        Action::Surrender,
+                    ],
+                }
+                .into_iter()
+                .map(|action| action as usize)
+                .collect();
+
+                let state = State::new(game.clone(), player);
                 let action = if exploration == 1.0 || rand::rng().random::<f32>() < exploration {
-                    rand::rng().random_range(0..Dqn::<B>::output_size())
+                    *mask.choose(&mut rand::rng()).unwrap()
                 } else {
                     let state = Dqn::<B>::normalize(&[state.clone()], &self.device).valid();
                     let q = self.learner.model().valid().forward(state);
-                    q.argmax(1).into_scalar().to_usize()
+
+                    let select =
+                        Tensor::<B, 1, Int>::from_data(mask.as_slice(), &self.device).valid();
+                    q.select(1, select).argmax(1).into_scalar().to_usize()
                 };
 
-                let mut game = Simulation::new(game).forward(0, Action::try_from(action).unwrap());
-                let next_state = State::new(game.clone());
+                let mut game =
+                    Simulation::new(game).forward(player, Action::try_from(action).unwrap());
+                let next_state = State::new(game.clone(), player);
 
-                let terminal = !game.player_active(0);
+                let terminal = !game.player_active(player);
                 if terminal {
                     game.end();
                 }
 
-                let reward = match game.player_outcome(0) {
+                let reward = match game.player_outcome(player) {
                     Some(Outcome::PlayerWin(amount)) => amount,
                     Some(Outcome::DealerWin(amount)) => -amount,
                     Some(Outcome::Push) => 0.0,
                     None => 0.0,
                 };
 
+                let split_mul = match Action::try_from(action).unwrap() {
+                    Action::Split => 2.0,
+                    _ => 1.0,
+                };
+
                 ReplayItem {
                     state: Tensor::<B, 2>::from_data([state.normalize()], &self.device),
                     action: Tensor::<B, 2, Int>::from_data([[action as u32]], &self.device),
                     reward: Tensor::<B, 2>::from_data([[reward]], &self.device),
+                    split_mul: Tensor::<B, 2>::from_data([[split_mul]], &self.device),
                     terminal: Tensor::<B, 2>::from_data([[terminal as u8 as f32]], &self.device),
                     next_state: Tensor::<B, 2>::from_data([next_state.normalize()], &self.device),
                 }

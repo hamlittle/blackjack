@@ -49,11 +49,6 @@ impl<'a> Accuracy<'a> {
         let mut reports = Vec::new();
 
         for item in &SPLIT_TABLE {
-            // // no training data for initial hands of 2 or 3
-            // if item.player < Rank::Four {
-            //     continue;
-            // }
-
             for dealer in Rank::iter() {
                 if !item.dealer.contains(&dealer) {
                     continue;
@@ -65,14 +60,7 @@ impl<'a> Accuracy<'a> {
                     Score::Soft(12)
                 };
 
-                let (q, ev, action) = forward(player, dealer, None, self.model, self.device);
-
-                let split_player = Score::Hard(item.player.value());
-                let filter = [Action::Hit];
-                let (_, split_ev, _) =
-                    forward(split_player, dealer, Some(&filter), self.model, self.device);
-
-                let action = if split_ev > ev { Action::Split } else { action };
+                let (q, _, action) = forward(player, true, dealer, None, self.model, self.device);
 
                 reports.push(AccuracyReport {
                     player,
@@ -104,7 +92,8 @@ impl<'a> Accuracy<'a> {
                     continue;
                 }
 
-                let (q, _, action) = forward(item.player, dealer, None, self.model, self.device);
+                let (q, _, action) =
+                    forward(item.player, false, dealer, None, self.model, self.device);
 
                 reports.push(AccuracyReport {
                     player: item.player,
@@ -142,7 +131,7 @@ impl<'a> ExpectedValue<'a> {
             let player = game.add_player(1.0);
             game.start();
 
-            let mut model_game = self.play_as_model(game.clone(), player, true);
+            let mut model_game = self.play_as_model(game.clone(), player, None);
             let mut strat_game = self.play_as_strat(game.clone(), player, true);
 
             model_win_loss += Self::end_game(&mut model_game);
@@ -152,54 +141,42 @@ impl<'a> ExpectedValue<'a> {
         (model_win_loss, strat_win_loss)
     }
 
-    fn play_as_model(&self, game: Game, player: usize, first_action: bool) -> Game {
+    fn play_as_model(&self, game: Game, player: usize, prev_action: Option<Action>) -> Game {
         if !game.player_active(player) {
             return game;
         }
 
-        let mut game = game;
-
-        if first_action && self.model_should_split(&game, player) {
-            let split_player = game.player_split(player);
-
-            game = self.play_as_model(game, player, true);
-            game = self.play_as_model(game, split_player, true);
-
-            return game;
-        }
-
-        let score = game.player_score(player);
-        let dealer = game.dealer_upcard().rank;
-
-        let filter = if first_action {
-            None
+        let filter = if let Some(prev_action) = prev_action {
+            match prev_action {
+                Action::Split => Some(vec![
+                    Action::Hit,
+                    Action::Stand,
+                    Action::Double,
+                    Action::Split,
+                ]),
+                Action::Hit => Some(vec![Action::Hit, Action::Stand]),
+                Action::Double | Action::Stand | Action::Surrender => panic!("Player not active."),
+            }
         } else {
-            Some([Action::Hit, Action::Stand].as_ref())
+            None
         };
 
-        let (_, _, action) = forward(score, dealer, filter, self.model, self.device);
-        game = Simulation::new(game).forward(player, action);
+        let score = game.player_score(player);
+        let can_split = game.player_can_split(player);
+        let dealer = game.dealer_upcard().rank;
+        let (_, _, action) = forward(score, can_split, dealer, filter, self.model, self.device);
 
-        self.play_as_model(game, player, false)
+        let mut game = game;
+        if action == Action::Split {
+            let split_player = game.player_split(player);
 
-        // let mut first_action = first_action;
-        // while game.player_active(player) {
-        //     let score = game.player_score(player);
-        //     let dealer = game.dealer_upcard().rank;
+            game = self.play_as_model(game, player, Some(Action::Split));
+            game = self.play_as_model(game, split_player, Some(Action::Split));
+        } else {
+            game = Simulation::new(game).forward(player, action);
+        }
 
-        //     let filter = if first_action {
-        //         None
-        //     } else {
-        //         Some([Action::Hit, Action::Stand].as_ref())
-        //     };
-
-        //     let (_, _, action) = forward(score, dealer, filter, self.model, self.device);
-        //     game = Simulation::new(game).forward(player, action);
-
-        //     first_action = false;
-        // }
-
-        // game
+        self.play_as_model(game, player, Some(action))
     }
 
     fn play_as_strat(&self, game: Game, player: usize, first_action: bool) -> Game {
@@ -227,22 +204,6 @@ impl<'a> ExpectedValue<'a> {
         game = Simulation::new(game).forward(player, action);
 
         self.play_as_strat(game, player, false)
-
-        // let mut first_action = first_action;
-        // while game.player_active(player) {
-        //     let filter = if first_action {
-        //         None
-        //     } else {
-        //         Some([Action::Hit, Action::Stand].as_ref())
-        //     };
-
-        //     let action = basic_strategy(&game, player, filter).unwrap();
-        //     game = Simulation::new(game).forward(player, action);
-
-        //     first_action = false;
-        // }
-
-        // game
     }
 
     fn end_game(game: &mut Game) -> f32 {
@@ -256,36 +217,13 @@ impl<'a> ExpectedValue<'a> {
             })
             .sum()
     }
-
-    fn model_should_split(&self, game: &Game, player: usize) -> bool {
-        let player_hand = game.player_hand(player);
-        let dealer = game.dealer_upcard();
-
-        if player_hand[0] != player_hand[1] {
-            return false;
-        }
-
-        let player = game.player_score(player);
-        let dealer = dealer.rank;
-        let (_, ev, _) = forward(player, dealer, None, self.model, self.device);
-
-        let split_player = Score::Hard(player.value() / 2);
-        let (_, split_ev, _) = forward(
-            split_player,
-            dealer,
-            Some(&[Action::Hit]),
-            self.model,
-            self.device,
-        );
-
-        return split_ev > ev;
-    }
 }
 
 fn forward(
     player: Score,
+    can_split: bool,
     dealer: Rank,
-    filter: Option<&[Action]>,
+    filter: Option<Vec<Action>>,
     model: &M,
     device: &D,
 ) -> (Tensor<B, 2>, f32, Action) {
@@ -294,7 +232,7 @@ fn forward(
         suit: Suit::Diamonds,
     };
 
-    let state = State::raw_normalize(&player, &dealer);
+    let state = State::raw_normalize(&player, can_split, &dealer);
     let state = Tensor::<B, 2>::from_data([state], device);
 
     let q = model.forward(state);
@@ -302,12 +240,20 @@ fn forward(
 
     let filter = match filter {
         Some(filter) => filter,
-        None => &[
-            Action::Hit,
-            Action::Stand,
-            Action::Double,
-            Action::Surrender,
-        ],
+        None => {
+            let mut actions = vec![
+                Action::Hit,
+                Action::Stand,
+                Action::Double,
+                Action::Surrender,
+            ];
+
+            if can_split {
+                actions.push(Action::Split);
+            }
+
+            actions
+        }
     };
     let filter: Vec<_> = filter.iter().map(|&action| usize::from(action)).collect();
     let filter = Tensor::<B, 1, Int>::from_data(filter.as_slice(), device);
@@ -321,210 +267,3 @@ fn forward(
 
     (q, ev, Action::try_from(action).unwrap())
 }
-
-// pub fn expected_value(
-//     player_score: Score,
-//     dealer_upcard: Card,
-//     filter: Option<&[Action]>,
-//     model: &M,
-//     device: &D,
-// ) -> f32 {
-//     let state = State::raw_normalize(&player_score, &dealer_upcard);
-//     let state = Tensor::<B, 2>::from_data([state], device);
-//     let q = model.forward(state);
-
-//     let filter: Vec<_> = match filter {
-//         Some(filter) => filter.iter().map(|action| *action as u32).collect(),
-//         None => (0..M::output_size() as u32).collect(),
-//     };
-
-//     let filter = Tensor::<Candle, 1, Int>::from_data(filter.as_slice(), &device).reshape([1, -1]);
-//     q.gather(1, filter).max_dim(1).into_scalar().to_f32()
-// }
-
-// pub fn best_action(
-//     player_score: Score,
-//     dealer_upcard: Card,
-//     first_play: bool,
-//     can_split: bool,
-//     model: &M,
-//     device: &CandleDevice,
-// ) -> Action {
-//     if first_play && can_split {
-//         let ev = expected_value(player_score, dealer_upcard, None, model, device);
-
-//         let split_ev = expected_value(
-//             Score::Hard(player_score.value() / 2),
-//             dealer_upcard,
-//             Some(&[Action::Hit]),
-//             model,
-//             device,
-//         ) * 2.0;
-
-//         if split_ev > ev {
-//             return Action::Split;
-//         }
-//     }
-
-//     let state = State::raw_normalize(&player_score, &dealer_upcard);
-//     let state = Tensor::<B, 2>::from_data([state], device);
-//     let q = model.forward(state);
-
-//     let q = if !first_play {
-//         let filter = [Action::Hit as u32, Action::Stand as u32];
-//         let filter = Tensor::<Candle, 2, Int>::from_data([filter], &device);
-
-//         q.gather(1, filter)
-//     } else {
-//         q
-//     };
-
-//     let best_action = q.argmax(1).into_scalar().to_usize();
-
-//     Action::try_from(best_action).unwrap()
-// }
-
-// pub fn evaluate_gameplay(
-//     game: &mut Game,
-//     player: usize,
-//     terminal: bool,
-//     is_split: bool,
-//     model: &M,
-//     device: &CandleDevice,
-// ) -> (f32, Action) {
-//     let player_hand = game.player_hand(0);
-//     let first_action = best_action(
-//         game.player_score(0),
-//         game.dealer_upcard(),
-//         true,
-//         player_hand[0].rank == player_hand[1].rank,
-//         model,
-//         device,
-//     );
-
-//     if first_action == Action::Split {
-//         let split_player = game.player_split(player);
-//         let _ = evaluate_gameplay(game, player, false, true, model, device);
-//         let _ = evaluate_gameplay(game, split_player, false, true, model, device);
-
-//         let mut win_loss = 0.0;
-//         if !is_split {
-//             game.end();
-
-//             win_loss = (0..game.player_count())
-//                 .map(|player| match game.player_outcome(player).unwrap() {
-//                     Outcome::PlayerWin(amount) => amount,
-//                     Outcome::DealerWin(bet) => -bet,
-//                     Outcome::Push => 0.0,
-//                 })
-//                 .sum();
-//         }
-
-//         return (win_loss, Action::Split);
-//     } else {
-//         let mut action = first_action;
-
-//         while game.player_outcome(player).is_none() {
-//             match action {
-//                 Action::Hit => {
-//                     game.player_hit(player);
-//                 }
-//                 Action::Stand => {
-//                     game.player_stand(player);
-//                     break;
-//                 }
-//                 Action::Double => {
-//                     game.player_double(player);
-//                     break;
-//                 }
-//                 Action::Surrender => {
-//                     game.player_surrender(player);
-//                     break;
-//                 }
-//                 Action::Split => panic!("ERR! Model does not evaluate splits."),
-//             }
-
-//             action = best_action(
-//                 game.player_score(player),
-//                 game.dealer_upcard(),
-//                 false,
-//                 false,
-//                 model,
-//                 device,
-//             );
-//         }
-//     }
-
-//     let mut win_loss = 0.0;
-//     if terminal {
-//         game.end();
-
-//         win_loss = match game.player_outcome(player).unwrap() {
-//             Outcome::PlayerWin(amount) => amount,
-//             Outcome::DealerWin(bet) => -bet,
-//             Outcome::Push => 0.0,
-//         };
-//     }
-
-//     (win_loss, first_action)
-// }
-
-// fn evaluate_accuracy(
-//     test_type: &str,
-//     test_data: &[(Score, RangeInclusive<Rank>, Action)],
-//     eval_split: bool,
-//     model: &M,
-//     device: &CandleDevice,
-// ) -> (u32, u32, f32) {
-//     let mut correct_plays = 0;
-//     let mut incorrect_plays = 0;
-
-//     for (player_score, dealer_upcard, correct_action) in test_data {
-//         for dealer_upcard in Rank::iter().filter(|r| dealer_upcard.contains(r)) {
-//             let dealer_upcard = Card {
-//                 rank: dealer_upcard,
-//                 suit: Suit::Diamonds,
-//             };
-
-//             let action = best_action(
-//                 *player_score,
-//                 dealer_upcard,
-//                 true,
-//                 eval_split,
-//                 model,
-//                 device,
-//             );
-
-//             if action == *correct_action {
-//                 correct_plays += 1;
-//             } else {
-//                 incorrect_plays += 1;
-//             }
-
-//             let state = State::raw_normalize(player_score, &dealer_upcard);
-//             let state = Tensor::<B, 2>::from_data([state], device);
-//             let q = model.forward(state);
-
-//             println!(
-//                 "{} {} | {:?} vs {}: Should {:?}, Chose {:?} -> Q-values: {}",
-//                 if action == *correct_action {
-//                     "\u{2705}"
-//                 } else {
-//                     "\u{274C}"
-//                 },
-//                 test_type,
-//                 player_score,
-//                 dealer_upcard.rank.value(),
-//                 correct_action,
-//                 action,
-//                 q.into_data()
-//             )
-//         }
-//     }
-
-//     (
-//         correct_plays,
-//         incorrect_plays,
-//         correct_plays as f32 / (correct_plays + incorrect_plays) as f32,
-//     )
-// }
