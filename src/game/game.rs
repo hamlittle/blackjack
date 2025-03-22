@@ -126,6 +126,10 @@ impl Game {
         self.status = GameStatus::GameOver;
     }
 
+    pub fn player_can_split(&self, player: usize) -> bool {
+        self.players[player].can_split()
+    }
+
     pub fn player_hit(&mut self, player: usize) -> Option<Outcome> {
         if self.status != GameStatus::PlayerTurn {
             panic!("Game is not in progress");
@@ -148,10 +152,6 @@ impl Game {
         }
 
         self.players[player].action_double(self.shoe.one().unwrap())
-    }
-
-    pub fn player_can_split(&self, player: usize) -> bool {
-        self.players[player].can_split()
     }
 
     pub fn player_split(&mut self, player: usize) -> usize {

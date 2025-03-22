@@ -23,9 +23,10 @@ pub trait Train<Item> {
         &self,
         batch: &Self::Batch,
         weights: &Self::Weights,
-        iteration: usize,
+        step: usize,
     ) -> TrainOutput<Item>;
-    fn fit(self, grads: GradientsParams, weights: &Self::Weights) -> Self;
+
+    fn fit(self, grads: GradientsParams, weights: &Self::Weights, iteration: usize) -> Self;
 }
 
 pub trait Valid<Item> {
@@ -36,6 +37,6 @@ pub trait Valid<Item> {
         &self,
         batch: &Self::Batch,
         weights: &Self::Weights,
-        iteration: usize,
+        step: usize,
     ) -> TrainOutput<Item>;
 }

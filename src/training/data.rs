@@ -89,10 +89,11 @@ where
 {
     pub state: Tensor<B, 2>,
     pub action: Tensor<B, 2, Int>,
+    pub pending: Tensor<B, 2>,
     pub reward: Tensor<B, 2>,
     pub split_mul: Tensor<B, 2>,
-    pub terminal: Tensor<B, 2>,
     pub next_state: Tensor<B, 2>,
+    pub valid_play: Tensor<B, 2, Bool>,
 }
 
 pub struct ReplayBuffer<B>
@@ -135,8 +136,9 @@ where
         self.buffer.push_back(item);
     }
 
-    pub fn sample(&self, iteration: usize) -> Vec<&ReplayItem<B>> {
-        let indices = &self.indices[iteration % self.capacity];
+    pub fn sample(&self, step: usize) -> Vec<&ReplayItem<B>> {
+        let indices = &self.indices[step % self.capacity];
+
         indices.into_iter().map(|ndx| &self.buffer[*ndx]).collect()
     }
 }

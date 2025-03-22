@@ -32,7 +32,7 @@ pub fn main() {
 
     let dir = "/tmp/training/";
     // let dir = "training/dqn/4";
-    let model = "model-5";
+    let model = "model-8-2";
     let verbose = false;
     let rounds = 500_000;
 

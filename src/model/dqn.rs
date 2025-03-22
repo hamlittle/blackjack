@@ -35,6 +35,9 @@ pub struct Weights {
 
     #[config(default = 0.0)]
     pub eps: f32,
+
+    #[config(default = 1_000)]
+    pub target_update: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -53,7 +56,7 @@ pub enum Input {
 }
 
 impl State {
-    const SIZE: usize = Input::Size as usize;
+    pub const SIZE: usize = Input::Size as usize;
 
     pub fn new(game: Game, player: usize) -> Self {
         Self { game, player }
@@ -174,8 +177,10 @@ where
     O: Optimizer<Dqn<B>, B>,
 {
     model: Dqn<B>,
+    target: Dqn<B>,
     optimizer: O,
     device: B::Device,
+    step: usize,
 }
 
 impl<B> Learner<B, OptimizerAdaptor<Adam, Dqn<B>, B>>
@@ -183,10 +188,14 @@ where
     B: AutodiffBackend,
 {
     pub fn new(config: &LearnerConfig, device: B::Device) -> Self {
+        let model = config.model.init(&device);
+
         Self {
-            model: config.model.init(&device),
+            target: model.clone(),
+            model,
             optimizer: config.optimizer.init().to_owned(),
             device: device,
+            step: 0,
         }
     }
 
@@ -218,95 +227,42 @@ where
         &self,
         batch: &ReplayBuffer<B>,
         weights: &Weights,
-        iteration: usize,
+        step: usize,
     ) -> TrainOutput<Tensor<B, 1>> {
-        // println!("---");
-        let sample = batch.sample(iteration);
+        let sample = batch.sample(step);
 
         let state = collate(&sample, |item| item.state.clone());
         let action = collate(&sample, |item| item.action.clone());
+        let pending = collate(&sample, |item| item.pending.clone());
         let reward = collate(&sample, |item| item.reward.clone());
-        // dbg!(reward.to_data().to_vec::<f32>());
         let split_mul = collate(&sample, |item| item.split_mul.clone());
-        // dbg!(split_mul.to_data().to_vec::<f32>());
-        let terminal = collate(&sample, |item| item.terminal.clone());
-        // dbg!(terminal.to_data().to_vec::<f32>());
         let next_state = collate(&sample, |item| item.next_state.clone());
+        let valid_play = collate(&sample, |item| item.valid_play.clone());
 
-        let mask = action_mask(
-            action.clone(),
-            next_state.clone(),
-            Dqn::<B>::output_size(),
-            &self.device,
-        );
+        let q = self.model.forward(state);
+        let chosen_q = q.gather(1, action);
 
-        let q = self.model.forward(state.clone());
-        let chosen_q = q.clone().gather(1, action.clone());
+        let next_q = self.target.forward(next_state).detach();
+        let max_next_q = next_q
+            .mask_fill(valid_play.bool_not(), f32::NEG_INFINITY)
+            .max_dim(1);
 
-        let next_q = self
-            .model
-            .forward(next_state)
-            .detach()
-            .mask_fill(mask.bool_not(), f32::NEG_INFINITY);
-        // dbg!(next_q.to_data().to_vec::<f32>());
-        let max_next_q = next_q.max_dim(1);
-
-        let pending = -(terminal - 1.0);
         let target = (reward + pending * weights.gamma * max_next_q) * split_mul;
-        // dbg!(target.to_data().to_vec::<f32>());
 
         let loss = MseLoss::new().forward(chosen_q, target, Reduction::Mean);
-        // dbg!(loss.to_data().to_vec::<f32>());
 
         TrainOutput::new(&self.model, loss.backward(), loss)
     }
 
-    fn fit(mut self, grads: GradientsParams, weights: &Self::Weights) -> Self {
+    fn fit(mut self, grads: GradientsParams, weights: &Self::Weights, step: usize) -> Self {
+        if step - self.step > weights.target_update {
+            self.step = step;
+            self.target = self.model.clone();
+        }
+
         self.model = self.optimizer.step(weights.lr as f64, self.model, grads);
         self
     }
-}
-
-fn action_mask<B: Backend>(
-    action: Tensor<B, 2, Int>,
-    next_state: Tensor<B, 2>,
-    size: usize,
-    device: &B::Device,
-) -> Tensor<B, 2, Bool> {
-    let action = action.to_data().to_vec::<i64>().unwrap();
-
-    let mask = action
-        .iter()
-        .enumerate()
-        .map(|(batch, &action)| {
-            let mut mask = vec![false; size];
-
-            match Action::try_from(action as usize).unwrap() {
-                Action::Split => {
-                    let batch_ndx = Tensor::<B, 1, Int>::from_data([batch], device);
-                    let split_ndx = Tensor::<B, 1, Int>::from_data([Input::Split as u32], device);
-                    let can_split = next_state.clone().select(0, batch_ndx).select(1, split_ndx);
-
-                    if can_split.bool().into_scalar() {
-                        vec![Action::Hit, Action::Stand, Action::Double, Action::Split]
-                    } else {
-                        vec![Action::Hit, Action::Stand, Action::Double]
-                    }
-                }
-                Action::Hit => vec![Action::Hit, Action::Stand],
-                Action::Double | Action::Stand => vec![Action::Stand],
-                Action::Surrender => vec![Action::Surrender],
-            }
-            .into_iter()
-            .for_each(|action| mask[action as usize] = true);
-
-            assert_eq!(mask.len(), size);
-
-            Tensor::<B, 1, Bool>::from_data(mask.as_slice(), device)
-        })
-        .collect();
-
-    Tensor::<B, 1, Bool>::stack(mask, 0)
 }
 
 impl<B, O> Valid<Tensor<B, 1>> for Learner<B, O>
@@ -321,8 +277,8 @@ where
         &self,
         batch: &Self::Batch,
         weights: &Self::Weights,
-        iteration: usize,
+        step: usize,
     ) -> TrainOutput<Tensor<B, 1>> {
-        self.train_step(batch, weights, iteration)
+        self.train_step(batch, weights, step)
     }
 }

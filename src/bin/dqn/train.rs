@@ -1,7 +1,10 @@
-use std::time::{Duration, Instant};
+use std::{
+    time::{Duration, Instant},
+    usize,
+};
 
 use blackjack::{
-    game::game::Outcome,
+    game::game::{Game, Outcome},
     model::{
         Model, Train, Valid,
         dqn::{Dqn, Learner, LearnerConfig, State, Weights},
@@ -19,7 +22,7 @@ use burn::{
     optim::{Adam, adaptor::OptimizerAdaptor},
     prelude::Backend,
     record::CompactRecorder,
-    tensor::{Int, Tensor, backend::AutodiffBackend, cast::ToElement},
+    tensor::{Bool, Int, Tensor, backend::AutodiffBackend, cast::ToElement},
     train::metric::{
         IterationSpeedMetric, LossInput, LossMetric, Metric, MetricMetadata, Numeric,
         state::{FormatOptions, NumericMetricState},
@@ -111,22 +114,28 @@ where
             // train step
             let mut metrics = Metrics::<B>::new();
 
-            let mut replay_buffer =
-                ReplayBuffer::new(hyper.replay, hyper.batch_size, hyper.iterations);
+            let mut replay_buffer = ReplayBuffer::new(
+                hyper.replay,
+                hyper.batch_size,
+                hyper.iterations * hyper.train_steps,
+            );
 
-            let items = self.generate(hyper.replay, hyper.trunc, 1.0);
+            let items = self.generate(hyper.replay, hyper.trunc, hyper.weights.eps);
             items.into_iter().for_each(|item| replay_buffer.push(item));
 
             let mut start = Instant::now();
+            let mut snapshot = 0;
             for iteration in 0..hyper.iterations {
                 let items = self.generate(hyper.gen_steps, hyper.trunc, hyper.weights.eps);
                 items.into_iter().for_each(|item| replay_buffer.push(item));
 
-                for _ in 0..hyper.train_steps {
+                for step in 0..hyper.train_steps {
+                    let step = iteration * hyper.train_steps + step;
+
                     let item = self
                         .learner
-                        .train_step(&replay_buffer, &hyper.weights, iteration);
-                    self.learner = self.learner.fit(item.grads, &hyper.weights);
+                        .train_step(&replay_buffer, &hyper.weights, step);
+                    self.learner = self.learner.fit(item.grads, &hyper.weights, step);
 
                     self.render_update(
                         &mut metrics,
@@ -140,6 +149,12 @@ where
                     );
                     start = Instant::now();
                 }
+
+                if iteration * 10 / hyper.iterations > snapshot {
+                    snapshot = iteration * 10 / hyper.iterations;
+
+                    self.save_model(&format!("-{}-{}", epoch + 1, snapshot));
+                }
             }
 
             self.save_model(&format!("-{}", epoch + 1));
@@ -152,6 +167,7 @@ where
                 lr: 0.0,
                 gamma: 1.0,
                 eps: 0.0,
+                target_update: usize::MAX,
             };
 
             let mut replay_buffer = ReplayBuffer::new(hyper.replay, hyper.batch_size, iterations);
@@ -164,21 +180,20 @@ where
                 let items = self.generate(hyper.gen_steps, hyper.trunc, weights.eps);
                 items.into_iter().for_each(|item| replay_buffer.push(item));
 
-                for _ in 0..hyper.train_steps {
-                    let item = self.learner.valid_step(&replay_buffer, &weights, iteration);
+                let step = iteration;
+                let item = self.learner.valid_step(&replay_buffer, &weights, step);
 
-                    self.render_update(
-                        &mut metrics,
-                        epoch + 1,
-                        epochs.len(),
-                        iteration + 1,
-                        start.elapsed(),
-                        &hyper,
-                        &item.item,
-                        false,
-                    );
-                    start = Instant::now();
-                }
+                self.render_update(
+                    &mut metrics,
+                    epoch + 1,
+                    epochs.len(),
+                    iteration + 1,
+                    start.elapsed(),
+                    &hyper,
+                    &item.item,
+                    false,
+                );
+                start = Instant::now();
             }
         }
 
@@ -187,13 +202,12 @@ where
     }
 
     fn save_model(&self, suffix: &str) {
+        let path = format!("{}/model{}", self.artifact_dir, suffix);
+
         self.learner
             .model()
             .clone()
-            .save_file(
-                format!("{}/model{}", self.artifact_dir, suffix),
-                &CompactRecorder::new(),
-            )
+            .save_file(path, &CompactRecorder::new())
             .expect("Failed to save trained model");
     }
 
@@ -208,45 +222,38 @@ where
                 let player = game.add_player(1.0);
                 game.start();
 
-                let player_hand = game.player_hand(player);
-                let can_split = player_hand[0].rank == player_hand[1].rank;
-                let mask: Vec<_> = match can_split {
-                    true => vec![
-                        Action::Hit,
-                        Action::Stand,
-                        Action::Double,
-                        Action::Surrender,
-                        Action::Split,
-                    ],
-                    false => vec![
-                        Action::Hit,
-                        Action::Stand,
-                        Action::Double,
-                        Action::Surrender,
-                    ],
-                }
-                .into_iter()
-                .map(|action| action as usize)
-                .collect();
-
                 let state = State::new(game.clone(), player);
+
+                let valid_play: Vec<_> = Self::valid_play(&game, player, None)
+                    .into_iter()
+                    .map(|action| usize::from(action))
+                    .collect();
+
                 let action = if exploration == 1.0 || rand::rng().random::<f32>() < exploration {
-                    *mask.choose(&mut rand::rng()).unwrap()
+                    *valid_play.choose(&mut rand::rng()).unwrap()
                 } else {
+                    let valid_play =
+                        Tensor::<B, 1, Int>::from_data(valid_play.as_slice(), &self.device).valid();
+
                     let state = Dqn::<B>::normalize(&[state.clone()], &self.device).valid();
                     let q = self.learner.model().valid().forward(state);
 
-                    let select =
-                        Tensor::<B, 1, Int>::from_data(mask.as_slice(), &self.device).valid();
-                    q.select(1, select).argmax(1).into_scalar().to_usize()
+                    q.select(1, valid_play).argmax(1).into_scalar().to_usize()
                 };
 
                 let mut game =
                     Simulation::new(game).forward(player, Action::try_from(action).unwrap());
+
                 let next_state = State::new(game.clone(), player);
 
-                let terminal = !game.player_active(player);
-                if terminal {
+                let valid_play =
+                    Self::valid_play(&game, player, Some(Action::try_from(action).unwrap()));
+                let valid_play: Vec<_> = (0..Dqn::<B>::output_size())
+                    .map(|action| valid_play.contains(&Action::try_from(action).unwrap()))
+                    .collect();
+
+                let pending = game.player_active(player);
+                if !pending {
                     game.end();
                 }
 
@@ -262,16 +269,62 @@ where
                     _ => 1.0,
                 };
 
+                let state = Tensor::<B, 2>::from_data([state.normalize()], &self.device);
+                let action = Tensor::<B, 2, Int>::from_data([[action as u32]], &self.device);
+                let pending = Tensor::<B, 2>::from_data([[pending as u8 as f32]], &self.device);
+                let reward = Tensor::<B, 2>::from_data([[reward]], &self.device);
+                let split_mul = Tensor::<B, 2>::from_data([[split_mul]], &self.device);
+                let next_state = Tensor::<B, 2>::from_data([next_state.normalize()], &self.device);
+                let valid_play =
+                    Tensor::<B, 1, Bool>::from_data(valid_play.as_slice(), &self.device)
+                        .reshape([1, -1]);
+
                 ReplayItem {
-                    state: Tensor::<B, 2>::from_data([state.normalize()], &self.device),
-                    action: Tensor::<B, 2, Int>::from_data([[action as u32]], &self.device),
-                    reward: Tensor::<B, 2>::from_data([[reward]], &self.device),
-                    split_mul: Tensor::<B, 2>::from_data([[split_mul]], &self.device),
-                    terminal: Tensor::<B, 2>::from_data([[terminal as u8 as f32]], &self.device),
-                    next_state: Tensor::<B, 2>::from_data([next_state.normalize()], &self.device),
+                    state,
+                    action,
+                    pending,
+                    reward,
+                    split_mul,
+                    next_state,
+                    valid_play,
                 }
             })
             .collect()
+    }
+
+    fn valid_play(game: &Game, player: usize, prev_action: Option<Action>) -> Vec<Action> {
+        let player_hand = game.player_hand(player);
+        let can_split = player_hand[0] == player_hand[1];
+
+        if prev_action.is_none() {
+            let mut valid_play = vec![
+                Action::Hit,
+                Action::Stand,
+                Action::Double,
+                Action::Surrender,
+            ];
+
+            if can_split {
+                valid_play.push(Action::Split);
+            }
+
+            valid_play
+        } else {
+            match prev_action.unwrap() {
+                Action::Hit => vec![Action::Hit, Action::Stand],
+                Action::Stand | Action::Double => vec![Action::Stand],
+                Action::Surrender => vec![Action::Surrender],
+                Action::Split => {
+                    let mut valid_play = vec![Action::Hit, Action::Stand, Action::Double];
+
+                    if can_split {
+                        valid_play.push(Action::Split);
+                    }
+
+                    valid_play
+                }
+            }
+        }
     }
 
     fn render_update(
