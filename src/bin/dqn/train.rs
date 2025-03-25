@@ -28,6 +28,7 @@ use burn::{
         state::{FormatOptions, NumericMetricState},
     },
 };
+use log::info;
 use rand::{Rng, seq::IndexedRandom};
 
 #[derive(Config)]
@@ -170,9 +171,10 @@ where
                 target_update: usize::MAX,
             };
 
-            let mut replay_buffer = ReplayBuffer::new(hyper.replay, hyper.batch_size, iterations);
+            let mut replay_buffer =
+                ReplayBuffer::new(hyper.replay, hyper.batch_size / 8, iterations);
 
-            let items = self.generate(hyper.replay, hyper.trunc, weights.eps);
+            let items = self.generate(hyper.replay, hyper.trunc, 0.0);
             items.into_iter().for_each(|item| replay_buffer.push(item));
 
             let mut start = Instant::now();
@@ -258,8 +260,8 @@ where
                 }
 
                 let reward = match game.player_outcome(player) {
-                    Some(Outcome::PlayerWin(amount)) => amount,
-                    Some(Outcome::DealerWin(amount)) => -amount,
+                    Some(Outcome::PlayerWin(amount)) => amount / 2.0,
+                    Some(Outcome::DealerWin(amount)) => -amount / 2.0,
                     Some(Outcome::Push) => 0.0,
                     None => 0.0,
                 };

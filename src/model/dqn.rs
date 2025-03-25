@@ -7,9 +7,15 @@ use burn::{
     },
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::*,
-    tensor::{BasicOps, TensorKind, activation::relu, backend::AutodiffBackend},
+    tensor::{
+        BasicOps, TensorKind,
+        activation::{leaky_relu, relu},
+        backend::AutodiffBackend,
+        cast::ToElement,
+    },
     train::TrainOutput,
 };
+use log::info;
 use strum::IntoEnumIterator;
 
 use crate::{
@@ -100,6 +106,7 @@ pub struct ModelConfig {
 pub struct Dqn<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
+    fc3: Linear<B>,
     value: Linear<B>,
 }
 
@@ -116,9 +123,15 @@ where
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         let fc1 = LinearConfig::new(Self::input_size(), config.hidden_size).init(device);
         let fc2 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
+        let fc3 = LinearConfig::new(config.hidden_size, config.hidden_size).init(device);
         let value = LinearConfig::new(config.hidden_size, Self::output_size()).init(device);
 
-        Self { fc1, fc2, value }
+        Self {
+            fc1,
+            fc2,
+            fc3,
+            value,
+        }
     }
 }
 
@@ -149,6 +162,8 @@ where
         let x = self.fc1.forward(state);
         let x = relu(x);
         let x = self.fc2.forward(x);
+        let x = relu(x);
+        let x = self.fc3.forward(x);
         let x = relu(x);
         let x = self.value.forward(x);
 
@@ -239,17 +254,50 @@ where
         let next_state = collate(&sample, |item| item.next_state.clone());
         let valid_play = collate(&sample, |item| item.valid_play.clone());
 
-        let q = self.model.forward(state);
-        let chosen_q = q.gather(1, action);
+        let q = self.model.forward(state.clone());
+        let chosen_q = q.clone().gather(1, action.clone());
 
-        let next_q = self.target.forward(next_state).detach();
+        let next_q = self.target.forward(next_state.clone()).detach();
         let max_next_q = next_q
-            .mask_fill(valid_play.bool_not(), f32::NEG_INFINITY)
+            .clone()
+            .mask_fill(valid_play.clone().bool_not(), f32::NEG_INFINITY)
             .max_dim(1);
 
-        let target = (reward + pending * weights.gamma * max_next_q) * split_mul;
+        let target = (reward.clone() + pending.clone() * weights.gamma * max_next_q.clone())
+            * split_mul.clone();
 
-        let loss = MseLoss::new().forward(chosen_q, target, Reduction::Mean);
+        let loss = MseLoss::new().forward(chosen_q.clone(), target.clone(), Reduction::Mean);
+
+        // if loss.clone().into_scalar().to_f32() > 100.0 {
+        //     info!(
+        //         "state: {}
+        //         action: {}
+        //         pending: {}
+        //         reward: {}
+        //         split_mul: {}
+        //         next_state: {}
+        //         valid_play: {}
+        //         q: {}
+        //         chosen_q: {}
+        //         next_q: {}
+        //         max_next_q: {}
+        //         target:{}
+        //         loss: {}",
+        //         state,
+        //         action,
+        //         pending,
+        //         reward,
+        //         split_mul,
+        //         next_state,
+        //         valid_play,
+        //         q,
+        //         chosen_q,
+        //         next_q,
+        //         max_next_q,
+        //         target,
+        //         loss
+        //     );
+        // }
 
         TrainOutput::new(&self.model, loss.backward(), loss)
     }
