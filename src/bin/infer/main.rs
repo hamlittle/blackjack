@@ -30,10 +30,10 @@ fn load(dir: &str, model: &str, device: &D) -> M {
 pub fn main() {
     let device = CandleDevice::default();
 
-    let dir = "/tmp/training/";
+    let dir = "/tmp/training";
     // let dir = "training/dqn/4";
     let model = "model";
-    let verbose = false;
+    let verbose = true;
     let rounds = 500_000;
 
     let model = load(dir, model, &device);
